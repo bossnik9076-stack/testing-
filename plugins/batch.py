@@ -99,7 +99,7 @@ async def get_msg(c, u, i, d, lt):
                     pass
                 
                 # If bot couldn't fetch, try with userbot u
-                client_to_use = u if (u and u != c) else Y
+                client_to_use = u if u else None
                 if client_to_use:
                     try:
                         xm = await client_to_use.get_messages(i, d)
@@ -121,7 +121,7 @@ async def get_msg(c, u, i, d, lt):
                 return None
         else:
             # Private channel
-            client_to_use = u if (u and u != c) else Y
+            client_to_use = u if u else None
             if client_to_use:
                 try:
                     cid_str = str(i).strip()
@@ -195,8 +195,7 @@ async def get_uclient(uid):
             return gg
         except Exception as e:
             print(f'User client error: {e}')
-    from shared_client import userbot
-    return userbot or X
+    return None
 
 async def prog(c, t, C, h, m, st):
     if should_cancel(int(h)):
@@ -344,12 +343,12 @@ async def process_msg(c, u, m, d, lt, uid, i):
         ):
             f = await rename_file(f, d, p)
         
-        fsize = os.path.getsize(f) / (1024 * 1024 * 1024)
+        fsize_mb = os.path.getsize(f) / (1024 * 1024)
         th = thumbnail(d)
         
-        if fsize > 2 and Y:
+        if fsize_mb > 50 and Y:
             st = time.time()
-            await c.edit_message_text(d, p.id, '⚡ Large file (>2GB). Uploading via userbot...')
+            await c.edit_message_text(d, p.id, '⚡ Large file (>50MB). Uploading via userbot...')
             await upd_dlg(Y)
             mtd = await get_video_metadata(f)
             dur, h, w = mtd['duration'], mtd['width'], mtd['height']
@@ -374,6 +373,12 @@ async def process_msg(c, u, m, d, lt, uid, i):
                                             reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st))
             
             await c.copy_message(d, LOG_GROUP, sent.id)
+            if sent:
+                try:
+                    usr = await c.get_users(uid)
+                    await c.send_message(LOG_GROUP, text=f"👤 **Extracted by:** [{usr.first_name}](tg://user?id={uid})\n🆔 **User ID:** `{uid}`", reply_to_message_id=sent.id)
+                except Exception:
+                    pass
             if os.path.exists(f): os.remove(f)
             if th and isinstance(th, str) and os.path.exists(th) and (th.startswith("thumb_") or th.startswith("temp_thumb_")):
                 try: os.remove(th)
@@ -383,6 +388,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
         
         await c.edit_message_text(d, p.id, '🚀 Uploading to Telegram...')
         st = time.time()
+        sent = None
 
         try:
             video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv']
@@ -392,32 +398,32 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 mtd = await get_video_metadata(f)
                 dur, h, w = mtd['duration'], mtd['width'], mtd['height']
                 th = await screenshot(f, dur, d)
-                await c.send_video(tcid, video=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_video(tcid, video=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
                                 thumb=th, width=w, height=h, duration=dur, 
                                 progress=prog, progress_args=(c, d, p.id, st), 
                                 reply_to_message_id=rtmid)
             elif m.video_note:
-                await c.send_video_note(tcid, video_note=f, progress=prog, 
+                sent = await c.send_video_note(tcid, video_note=f, progress=prog, 
                                     progress_args=(c, d, p.id, st), reply_to_message_id=rtmid)
             elif m.voice:
-                await c.send_voice(tcid, f, progress=prog, progress_args=(c, d, p.id, st), 
+                sent = await c.send_voice(tcid, f, progress=prog, progress_args=(c, d, p.id, st), 
                                 reply_to_message_id=rtmid)
             elif m.sticker:
-                await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
+                sent = await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
             elif m.audio or (m.document and file_ext in audio_extensions):
-                await c.send_audio(tcid, audio=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_audio(tcid, audio=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
                                 thumb=th, progress=prog, progress_args=(c, d, p.id, st), 
                                 reply_to_message_id=rtmid)
             elif m.photo:
-                await c.send_photo(tcid, photo=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_photo(tcid, photo=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
                                 progress=prog, progress_args=(c, d, p.id, st), 
                                 reply_to_message_id=rtmid)
             elif m.document:
-                await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
                                     progress=prog, progress_args=(c, d, p.id, st), 
                                     reply_to_message_id=rtmid)
             else:
-                await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
                                     progress=prog, progress_args=(c, d, p.id, st), 
                                     reply_to_message_id=rtmid)
         except asyncio.CancelledError:
@@ -441,6 +447,14 @@ async def process_msg(c, u, m, d, lt, uid, i):
             try: os.remove(th)
             except Exception: pass
             
+        if sent:
+            try:
+                log_msg = await c.copy_message(LOG_GROUP, from_chat_id=tcid, message_id=sent.id)
+                usr = await c.get_users(uid)
+                await c.send_message(LOG_GROUP, text=f"👤 **Extracted by:** [{usr.first_name}](tg://user?id={uid})\n🆔 **User ID:** `{uid}`", reply_to_message_id=log_msg.id)
+            except Exception as log_e:
+                print(f"Error logging: {log_e}")
+
         try:
             await c.delete_messages(d, p.id)
         except Exception:
@@ -523,7 +537,9 @@ async def text_handler(c, m):
         
         uc = await get_uclient(uid)
         if not uc:
-            uc = c
+            await pt.edit('⚠️ **Login Required**\n\nYou must login using /login to extract links. The bot\'s internal session is disabled for downloading.')
+            Z.pop(uid, None)
+            return
             
         try:
             msg = await get_msg(c, uc, i, d, lt)
@@ -563,7 +579,9 @@ async def text_handler(c, m):
         pt = await m.reply_text(f'⏳ Starting batch of {n} messages...')
         uc = await get_uclient(uid)
         if not uc:
-            uc = c
+            await pt.edit('⚠️ **Login Required**\n\nYou must login using /login to extract links. The bot\'s internal session is disabled for downloading.')
+            Z.pop(uid, None)
+            return
             
         if is_user_active(uid):
             await pt.edit('⚠️ Active task exists. Use /stop first.')
