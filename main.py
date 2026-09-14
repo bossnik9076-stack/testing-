@@ -3,6 +3,11 @@ import sys
 import logging
 import urllib.request
 import asyncio
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from config import BOT_TOKEN, DEFAULT_THUMB, DEFAULT_THUMB_URL, THUMB_DIR
 from shared_client import app, client as tele_client
 
