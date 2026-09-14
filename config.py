@@ -13,7 +13,7 @@ except ImportError:
 
 API_ID       = int(os.getenv("API_ID", "32324370"))
 API_HASH     = os.getenv("API_HASH", "744f8b1e73b6b3262c3c8c1ea577229c")
-BOT_TOKEN    = os.getenv("BOT_TOKEN", "7566739138:AAEDvwHjXZDH2qQZzecvEjcRTZXeWCDRL60")
+BOT_TOKEN    = os.getenv("BOT_TOKEN", "7566739138:AAFqGisV6TH6_RZhEX_wHixT5WRzG7mpnlw")
 MONGO_DB     = os.getenv("MONGO_DB", "mongodb+srv://nik9076:kNjKz9fkP6IeZrsC@nik.aft4fcq.mongodb.net/?appName=nik")
 DB_NAME      = os.getenv("DB_NAME", "telegram_downloader")
 
