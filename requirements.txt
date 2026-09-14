@@ -1,0 +1,11 @@
+pyrogram==2.0.106
+tgcrypto
+pymongo
+motor
+python-dotenv
+aiohttp
+Pillow
+telethon
+cryptography
+psutil
+
