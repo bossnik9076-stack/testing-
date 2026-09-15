@@ -31,26 +31,44 @@ async def login_menu_callback(client: Client, callback: CallbackQuery):
     user_data = await get_user_data(user_id)
     is_logged_in = bool(user_data and user_data.get("session_string"))
 
-    text = (
-        "🔐 **अकाउंट लॉगिन व सेशन गेटवे (Account Gateway)** 🔐\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📱 **लॉगिन स्थिति:** {'✅ लॉग इन हैं (Active)' if is_logged_in else '❌ लॉग इन नहीं हैं (Inactive)'}\n\n"
-        "अपनी पसंद के अनुसार नीचे दिए गए **इंटरैक्टिव बटन** से लॉगिन करें:\n\n"
-        "1️⃣ **मोबाइल नंबर से लॉगिन** (OTP और 2FA के साथ)\n"
-        "2️⃣ **सेशन स्ट्रिंग से लॉगिन** (फास्ट लॉगिन)\n"
-        "3️⃣ **नया सेशन बनाएँ** (In-built Generator)\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🛡️ *आपका डेटा 100% एंड-टू-एंड एन्क्रिप्टेड है।*"
-    )
-    
-    buttons = [
-        [InlineKeyboardButton("📱 फ़ोन नंबर से लॉगिन करें", callback_data="btn_login_phone")],
-        [InlineKeyboardButton("🔑 डायरेक्ट सेशन स्ट्रिंग डालें", callback_data="btn_login_session_help")],
-        [InlineKeyboardButton("🚀 नया सेशन जनरेट करें", callback_data="btn_gen_session")],
-    ]
     if is_logged_in:
-        buttons.append([InlineKeyboardButton("🚪 अकाउंट लॉगआउट करें", callback_data="btn_do_logout")])
-    buttons.append([InlineKeyboardButton("🔙 मुख्य मेनू", callback_data="btn_main_menu")])
+        first_name = user_data.get("first_name", "User")
+        phone = user_data.get("phone", "")
+        phone_display = f"+{phone}" if phone else "सक्रिय (Active)"
+        text = (
+            "🔐 **अकाउंट स्थिति (Login Status)** 🔐\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 **लॉगिन स्थिति:** ✅ लॉग इन हैं (Active in Database)\n"
+            f"👤 **अकाउंट नाम:** `{first_name}`\n"
+            f"📞 **फ़ोन नंबर:** `{phone_display}`\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 **स्थायी लॉगिन (Permanent Login):**\n"
+            "बोट चाहे हजार बार भी रीस्टार्ट हो जाए, आपका लॉगिन हमेशा डेटाबेस में सुरक्षित रहेगा। आपको बार-बार लॉगिन करने की बिल्कुल ज़रूरत नहीं है!\n\n"
+            "यदि आप किसी दूसरे अकाउंट से लॉगिन करना चाहते हैं या लॉगआउट करना चाहते हैं, तो नीचे दिए गए विकल्प चुनें:"
+        )
+        buttons = [
+            [InlineKeyboardButton("🚪 अकाउंट लॉगआउट करें (Logout)", callback_data="btn_do_logout")],
+            [InlineKeyboardButton("🔄 नया सेशन बदलें (Change Account)", callback_data="btn_login_phone")],
+            [InlineKeyboardButton("🔙 मुख्य मेनू", callback_data="btn_main_menu")]
+        ]
+    else:
+        text = (
+            "🔐 **अकाउंट लॉगिन व सेशन गेटवे (Account Gateway)** 🔐\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📱 **लॉगिन स्थिति:** ❌ लॉग इन नहीं हैं (Inactive)\n\n"
+            "अपनी पसंद के अनुसार नीचे दिए गए **इंटरैक्टिव बटन** से लॉगिन करें:\n\n"
+            "1️⃣ **मोबाइल नंबर से लॉगिन** (OTP और 2FA के साथ)\n"
+            "2️⃣ **सेशन स्ट्रिंग से लॉगिन** (फास्ट लॉगिन)\n"
+            "3️⃣ **नया सेशन बनाएँ** (In-built Generator)\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🛡️ *आपका डेटा 100% एंड-टू-एंड एन्क्रिप्टेड है।*"
+        )
+        buttons = [
+            [InlineKeyboardButton("📱 फ़ोन नंबर से लॉगिन करें", callback_data="btn_login_phone")],
+            [InlineKeyboardButton("🔑 डायरेक्ट सेशन स्ट्रिंग डालें", callback_data="btn_login_session_help")],
+            [InlineKeyboardButton("🚀 नया सेशन जनरेट करें", callback_data="btn_gen_session")],
+            [InlineKeyboardButton("🔙 मुख्य मेनू", callback_data="btn_main_menu")]
+        ]
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -70,6 +88,24 @@ async def btn_login_phone_cb(client: Client, callback: CallbackQuery):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🛑 रद्द करें (Cancel)", callback_data="btn_cancel_login")],
         [InlineKeyboardButton("🔙 वापस जाएँ", callback_data="btn_login_menu")]
+    ])
+    msg = await callback.message.edit_text(text, reply_markup=kb)
+    login_cache[user_id] = {'status_msg': msg}
+
+@bot.on_callback_query(filters.regex("^btn_force_relogin$"))
+async def force_relogin_cb(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    local_steps[user_id] = STEP_PHONE
+    login_cache.pop(user_id, None)
+    text = (
+        "📱 **नया अकाउंट लॉगिन**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👉 कृपया चैट में अपना मोबाइल नंबर **+ कंट्री कोड** के साथ भेजें:\n\n"
+        "💡 *उदाहरण:* `+919876543210`"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 रद्द करें", callback_data="btn_cancel_login")],
+        [InlineKeyboardButton("🔙 वापस", callback_data="btn_login_menu")]
     ])
     msg = await callback.message.edit_text(text, reply_markup=kb)
     login_cache[user_id] = {'status_msg': msg}
@@ -202,6 +238,30 @@ async def login_command(client, message):
         except Exception as e:
             await status_msg.edit(f"❌ अमान्य सेशन स्ट्रिंग: `{e}`")
         return
+
+    if len(message.command) <= 1:
+        user_data = await get_user_data(user_id)
+        if user_data and user_data.get("session_string"):
+            first_name = user_data.get("first_name", "User")
+            phone = user_data.get("phone", "")
+            phone_display = f"+{phone}" if phone else "सक्रिय (Active)"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚪 अकाउंट लॉगआउट करें (Logout)", callback_data="btn_do_logout")],
+                [InlineKeyboardButton("🔄 नया सेशन बदलें (Change Account)", callback_data="btn_force_relogin")],
+                [InlineKeyboardButton("⚡ मुख्य मेनू खोलें", callback_data="btn_main_menu")]
+            ])
+            await message.reply_text(
+                f"✅ **आप पहले से ही लॉग इन हैं! (Already Logged In)**\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 **नाम:** `{first_name}`\n"
+                f"📱 **फ़ोन:** `{phone_display}`\n"
+                f"🟢 **स्थिति:** एक्टिव (Saved in Database)\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"💡 **बोट चाहे हजार बार भी रीस्टार्ट हो जाए**, आपका लॉगिन हमेशा डेटाबेस में सुरक्षित रहेगा। आपको बार-बार लॉगिन करने की बिल्कुल ज़रूरत नहीं है!\n\n"
+                f"यदि आप किसी दूसरे अकाउंट से लॉगिन करना चाहते हैं तो नीचे 'नया सेशन बदलें' दबाएं या लॉगआउट करें।",
+                reply_markup=kb
+            )
+            return
 
     local_steps[user_id] = STEP_PHONE
     login_cache.pop(user_id, None)

@@ -150,84 +150,106 @@ async def upd_dlg(c):
         return False
 
 # fixed the old group of 2021-2022 extraction 🌝 (buy krne ka fayda nhi ab old group) ✅ 
-async def get_msg(c, u, i, d, lt):
+async def get_msg(c, u, i, d, lt, topic_id=None):
     try:
+        cid_str = str(i).strip()
+        try:
+            if cid_str.startswith('-100'):
+                cid_int = int(cid_str)
+            elif cid_str.startswith('-'):
+                cid_int = int(f"-100{cid_str[1:]}")
+            elif cid_str.isdigit():
+                cid_int = int(f"-100{cid_str}")
+            else:
+                cid_int = int(cid_str)
+        except Exception:
+            cid_int = i
+
+        base_id = str(cid_str).replace('-100', '').replace('-', '')
+        alt_cids = [cid_int]
+        if base_id.isdigit():
+            alt_1 = int(f"-100{base_id}")
+            alt_2 = int(f"-{base_id}")
+            alt_3 = int(base_id)
+            for x in [alt_1, alt_2, alt_3]:
+                if x not in alt_cids:
+                    alt_cids.append(x)
+
+        target_mids = [int(d)]
+        if topic_id and int(topic_id) not in target_mids:
+            target_mids.append(int(topic_id))
+
         if lt == 'public':
-            try:
-                # First try with bot client c
-                try:
-                    xm = await c.get_messages(i, d)
-                    if xm and not getattr(xm, "empty", False):
-                        return xm
-                except Exception:
-                    pass
-                
-                # If bot couldn't fetch, try with userbot u
-                client_to_use = u if u else None
-                if client_to_use:
+            clients = [c]
+            if u and u not in clients: clients.append(u)
+            if Y and Y not in clients: clients.append(Y)
+
+            for cl in clients:
+                for tmid in target_mids:
                     try:
-                        xm = await client_to_use.get_messages(i, d)
+                        xm = await cl.get_messages(i, tmid)
                         if xm and not getattr(xm, "empty", False):
                             return xm
                     except Exception:
                         pass
+                if cl != c:
                     try:
-                        await client_to_use.join_chat(i)
-                        chat = await client_to_use.get_chat(f"@{i}" if not str(i).startswith('@') else i)
-                        xm = await client_to_use.get_messages(chat.id, d)
-                        if xm and not getattr(xm, "empty", False):
-                            return xm
+                        await cl.join_chat(i)
+                        chat = await cl.get_chat(f"@{i}" if not str(i).startswith('@') else i)
+                        for tmid in target_mids:
+                            xm = await cl.get_messages(chat.id, tmid)
+                            if xm and not getattr(xm, "empty", False):
+                                return xm
                     except Exception:
                         pass
-                return None
-            except Exception as e:
-                print(f'Error fetching public message: {e}')
-                return None
+            return None
         else:
-            # Private channel
-            client_to_use = u if u else None
-            if client_to_use:
-                try:
-                    cid_str = str(i).strip()
-                    if cid_str.startswith('-100'):
-                        cid_int = int(cid_str)
-                    elif cid_str.startswith('-'):
-                        cid_int = int(f"-100{cid_str[1:]}")
-                    elif cid_str.isdigit():
-                        cid_int = int(f"-100{cid_str}")
-                    else:
-                        cid_int = int(cid_str)
-                except Exception:
-                    cid_int = i
+            # Private channel / supergroup / topic link
+            # Priority:
+            # 1. User client (u)
+            # 2. Bot client (c) - Bot is often added as admin in target/source channel!
+            # 3. Default userbot (Y)
+            clients = []
+            if u and u not in clients: clients.append(u)
+            if c and c not in clients: clients.append(c)
+            if Y and Y not in clients: clients.append(Y)
 
-                try:
-                    result = await client_to_use.get_messages(cid_int, d)
-                    if result and not getattr(result, "empty", False):
-                        return result
-                except Exception:
-                    pass
+            for cl in clients:
+                for target_chat in alt_cids:
+                    # 1. Direct message fetch
+                    for tmid in target_mids:
+                        try:
+                            result = await cl.get_messages(target_chat, tmid)
+                            if result and not getattr(result, "empty", False):
+                                return result
+                        except Exception:
+                            pass
 
-                try:
-                    async for _ in client_to_use.get_dialogs(limit=50): pass
-                    result = await client_to_use.get_messages(cid_int, d)
-                    if result and not getattr(result, "empty", False):
-                        return result
-                except Exception:
-                    pass
+                    # 2. Try resolving peer via get_chat (loads access_hash into Pyrogram)
+                    try:
+                        await cl.get_chat(target_chat)
+                        for tmid in target_mids:
+                            result = await cl.get_messages(target_chat, tmid)
+                            if result and not getattr(result, "empty", False):
+                                return result
+                    except Exception:
+                        pass
 
-                try:
-                    base_id = str(cid_str).replace('-100', '').replace('-', '')
-                    alt_cid = int(f"-{base_id}")
-                    result = await client_to_use.get_messages(alt_cid, d)
-                    if result and not getattr(result, "empty", False):
-                        return result
-                except Exception:
-                    pass
+                    # 3. Try resolving via dialogs scan
+                    try:
+                        async for dlg in cl.get_dialogs(limit=50):
+                            if dlg.chat and (dlg.chat.id == target_chat or str(dlg.chat.id) in [str(x) for x in alt_cids]):
+                                break
+                        for tmid in target_mids:
+                            result = await cl.get_messages(target_chat, tmid)
+                            if result and not getattr(result, "empty", False):
+                                return result
+                    except Exception:
+                        pass
 
-                return None
             return None
     except Exception as e:
-        print(f'Error fetching message: {e}')
+        logger.error(f'Error fetching message: {e}')
         return None
 
 
@@ -245,20 +267,58 @@ async def get_ubot(uid):
         return None
 
 async def get_uclient(uid):
-    ud = await get_user_data(uid)
-    cl = UC.get(uid)
-    if cl: return cl
+    uid_int = int(uid)
+    cl = UC.get(uid_int)
+    if cl:
+        if getattr(cl, 'is_connected', False):
+            return cl
+        else:
+            try:
+                await cl.start()
+                return cl
+            except Exception:
+                pass
+
+    ud = await get_user_data(uid_int)
     xxx = ud.get('session_string') if ud else None
     if xxx:
         try:
-            ss = dcs(xxx)
-            gg = Client(f'{uid}_client', api_id=API_ID, api_hash=API_HASH, device_model="v3saver", session_string=ss, in_memory=True)
+            ss = None
+            try:
+                ss = dcs(xxx)
+            except Exception:
+                ss = xxx
+            if not ss:
+                ss = xxx
+
+            gg = Client(
+                f'{uid_int}_client',
+                api_id=int(API_ID),
+                api_hash=API_HASH,
+                device_model="v3saver",
+                session_string=ss,
+                in_memory=True
+            )
+            try:
+                from utils.func import setup_peer_storage_sync, load_db_peers_into_storage
+                setup_peer_storage_sync(gg)
+            except Exception:
+                pass
             await gg.start()
-            await upd_dlg(gg)
-            UC[uid] = gg
+            try:
+                await load_db_peers_into_storage(gg)
+            except Exception:
+                pass
+            asyncio.create_task(upd_dlg(gg))
+            UC[uid_int] = gg
             return gg
         except Exception as e:
-            print(f'User client error: {e}')
+            err_str = str(e)
+            logger.error(f'User client start error for {uid_int}: {e}')
+            if any(k in err_str for k in ["SESSION_REVOKED", "AUTH_KEY_UNREGISTERED", "USER_DEACTIVATED"]):
+                logger.warning(f"Session revoked by Telegram for {uid_int}. Removing from DB.")
+                await remove_user_session(uid_int)
+                UC.pop(uid_int, None)
     return None
 
 async def prog(c, t, C, h, m, st):
@@ -615,9 +675,11 @@ async def process_cmd(c, m):
     
     if await sub(c, m) == 1: return
     
-    uc = await get_uclient(uid)
-    if not uc:
-        await m.reply_text("⚠️ **Login Required**\n\nYou must login using /login to extract links. The bot's internal session is disabled for downloading.")
+    user_data = await get_user_data(uid)
+    has_session = bool(user_data and user_data.get("session_string"))
+    from config import STRING
+    if not has_session and uid not in UC and not STRING:
+        await m.reply_text("⚠️ **Login Required**\n\nYou must login using /login to extract links.")
         return
         
     if is_user_active(uid):
@@ -717,21 +779,28 @@ async def text_handler(c, m):
         await acquire_task_slot(uid, pt)
 
         uc = await get_uclient(uid)
-        if not uc:
-            await pt.edit('⚠️ **Login Required**\n\nYou must login using /login to extract links. The bot\'s internal session is disabled for downloading.')
+        from config import STRING
+        if not uc and not STRING:
+            ud = await get_user_data(uid)
+            if ud and ud.get('session_string'):
+                await pt.edit('⚠️ आपका लॉगिन डेटाबेस में सुरक्षित है, लेकिन टेलीग्राम से कनेक्ट करने में क्षणिक समस्या आई। कृपया कुछ सेकंड बाद पुनः प्रयास करें या /login से नया सेशन डालें।')
+            else:
+                await pt.edit('⚠️ **Login Required**\n\nYou must login using /login to extract links.')
             release_task_slot(uid)
             Z.pop(uid, None)
             return
             
         try:
-            msg = await get_msg(c, uc, i, d, lt)
+            from utils.func import extract_topic_id
+            topic_id = extract_topic_id(L)
+            msg = await get_msg(c, uc, i, d, lt, topic_id=topic_id)
             if msg:
                 res = await process_msg(c, uc, msg, str(m.chat.id), lt, uid, i)
                 try:
                     await pt.delete()
                 except Exception:
                     pass
-                await m.reply_text(f'✅ Extracted: {res}')
+                await m.reply_text(f'✅ Extracted: {res or "Done."}')
                 # Record successful extraction count for user
                 await record_user_extraction(uid)
             else:
@@ -778,8 +847,13 @@ async def text_handler(c, m):
         await acquire_task_slot(uid, pt)
 
         uc = await get_uclient(uid)
-        if not uc:
-            await pt.edit('⚠️ **Login Required**\n\nYou must login using /login to extract links. The bot\'s internal session is disabled for downloading.')
+        from config import STRING
+        if not uc and not STRING:
+            ud = await get_user_data(uid)
+            if ud and ud.get('session_string'):
+                await pt.edit('⚠️ आपका लॉगिन डेटाबेस में सुरक्षित है, लेकिन टेलीग्राम से कनेक्ट करने में क्षणिक समस्या आई। कृपया कुछ सेकंड बाद पुनः प्रयास करें या /login से नया सेशन डालें।')
+            else:
+                await pt.edit('⚠️ **Login Required**\n\nYou must login using /login to extract links.')
             release_task_slot(uid)
             Z.pop(uid, None)
             return

@@ -142,6 +142,15 @@ def thumbnail(sender: str) -> str | None:
 def hhmmss(seconds: int) -> str:
     return time.strftime('%H:%M:%S', time.gmtime(seconds))
 
+def extract_topic_id(L: str) -> int | None:
+    if not L:
+        return None
+    text = L.strip()
+    m = re.search(r'(?:https?://)?(?:t\.me|telegram\.me)/c/\d+/(\d+)/\d+', text)
+    if m:
+        return int(m.group(1))
+    return None
+
 def E(L: str):
     if not L:
         return None, None, None
@@ -185,19 +194,28 @@ async def is_private_chat(event) -> bool:
     return event.is_private
 
 async def save_user_data(user_id: int, key: str, value):
-    await users_collection.update_one(
-        {"user_id": user_id},
-        {"$set": {key: value}},
-        upsert=True
-    )
+    try:
+        uid = int(user_id)
+        await users_collection.update_one(
+            {"$or": [{"user_id": uid}, {"user_id": str(user_id)}]},
+            {"$set": {key: value, "user_id": uid}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"Error saving user data: {e}")
 
 async def get_user_data_key(user_id: int, key: str, default=None):
-    user_data = await users_collection.find_one({"user_id": int(user_id)})
-    return user_data.get(key, default) if user_data else default
+    try:
+        uid = int(user_id)
+        user_data = await users_collection.find_one({"$or": [{"user_id": uid}, {"user_id": str(user_id)}]})
+        return user_data.get(key, default) if user_data else default
+    except Exception as e:
+        return default
 
 async def get_user_data(user_id: int):
     try:
-        return await users_collection.find_one({"user_id": user_id})
+        uid = int(user_id)
+        return await users_collection.find_one({"$or": [{"user_id": uid}, {"user_id": str(user_id)}]})
     except Exception as e:
         logger.error(f"Error getting user data: {e}")
         return None
@@ -214,9 +232,11 @@ async def save_user_session(
     login_type: str = "direct"
 ) -> bool:
     try:
+        uid = int(user_id)
         update_data = {
             "session_string": session_string,
-            "updated_at": datetime.now()
+            "updated_at": datetime.now(),
+            "user_id": uid
         }
         if phone is not None:
             update_data["phone"] = phone
@@ -234,7 +254,7 @@ async def save_user_session(
             update_data["login_type"] = login_type
 
         await users_collection.update_one(
-            {"user_id": int(user_id)},
+            {"$or": [{"user_id": uid}, {"user_id": str(user_id)}]},
             {"$set": update_data},
             upsert=True
         )
@@ -245,11 +265,19 @@ async def save_user_session(
 
 async def remove_user_session(user_id: int) -> bool:
     try:
-        await users_collection.update_one(
-            {"user_id": int(user_id)},
+        uid = int(user_id)
+        await users_collection.update_many(
+            {"$or": [{"user_id": uid}, {"user_id": str(user_id)}]},
             {"$unset": {
                 "session_string": "",
-                "two_factor": ""
+                "two_factor": "",
+                "phone": "",
+                "first_name": "",
+                "last_name": "",
+                "username": "",
+                "account_id": "",
+                "login_type": "",
+                "cached_peers": ""
             }}
         )
         return True

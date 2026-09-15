@@ -227,10 +227,12 @@ async def verify_sub_callback(client: Client, callback: CallbackQuery):
 async def btn_single_cb(client: Client, callback: CallbackQuery):
     if await subscribe(client, callback) == 1: return
     user_id = callback.from_user.id
-    from plugins.batch import get_uclient
-    uc = await get_uclient(user_id)
-    if not uc:
-        await callback.answer("⚠️ Login Required! Please login first.", show_alert=True)
+    user_data = await get_user_data(user_id)
+    has_session = bool(user_data and user_data.get("session_string"))
+    from plugins.batch import UC
+    from config import STRING
+    if not has_session and user_id not in UC and not STRING:
+        await callback.answer("⚠️ Login Required! Please login first using /login.", show_alert=True)
         return
     from plugins.batch import Z
     Z[user_id] = {'step': 'start_single'}
@@ -251,10 +253,12 @@ async def btn_single_cb(client: Client, callback: CallbackQuery):
 async def btn_batch_cb(client: Client, callback: CallbackQuery):
     if await subscribe(client, callback) == 1: return
     user_id = callback.from_user.id
-    from plugins.batch import get_uclient
-    uc = await get_uclient(user_id)
-    if not uc:
-        await callback.answer("⚠️ Login Required! Please login first.", show_alert=True)
+    user_data = await get_user_data(user_id)
+    has_session = bool(user_data and user_data.get("session_string"))
+    from plugins.batch import UC
+    from config import STRING
+    if not has_session and user_id not in UC and not STRING:
+        await callback.answer("⚠️ Login Required! Please login first using /login.", show_alert=True)
         return
         
     from plugins.batch import Z
