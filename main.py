@@ -83,37 +83,14 @@ async def main():
         web_app.router.add_get('/health', lambda r: web.Response(text="OK"))
         runner = web.AppRunner(web_app)
         await runner.setup()
-        port = int(os.environ.get("PORT", 3000))
+        port = 3000
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
         logger.info(f"Web dashboard started on port {port}.")
     except Exception as e:
         logger.warning(f"Failed to start web server: {e}")
 
-    logger.info("Starting Telegram Restricted Content Saver Bot (Pyrogram + Telethon Engine)...")
-    
-    if tele_client:
-        try:
-            await tele_client.start(bot_token=BOT_TOKEN)
-            logger.info("Telethon Bot Client started successfully.")
-        except Exception as e:
-            logger.warning(f"Telethon Bot Client start warning: {e}")
-    
-    from shared_client import userbot
-    if userbot:
-        try:
-            await userbot.start()
-            logger.info("Pyrogram UserBot Client started successfully.")
-            try:
-                async for _ in userbot.get_dialogs(limit=50): pass
-                logger.info("UserBot dialogs cached.")
-            except Exception:
-                pass
-        except Exception as e:
-            logger.warning(f"UserBot start warning: {e}")
-
-    await app.start()
-    logger.info("Pyrogram Bot Client started successfully. Bot is fully online!")
+    logger.info("Bot startup skipped to prevent conflict with Render instance. Only Web dashboard is running.")
     
     await asyncio.Event().wait()
 

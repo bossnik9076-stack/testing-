@@ -344,12 +344,12 @@ async def process_msg(c, u, m, d, lt, uid, i):
         ):
             f = await rename_file(f, d, p)
         
-        fsize_mb = os.path.getsize(f) / (1024 * 1024)
+        fsize = os.path.getsize(f) / (1024 * 1024 * 1024)
         th = thumbnail(d)
         
-        if fsize_mb > 50 and Y:
+        if fsize > 2 and Y:
             st = time.time()
-            await c.edit_message_text(d, p.id, '⚡ Large file (>50MB). Uploading via userbot...')
+            await c.edit_message_text(d, p.id, '⚡ File is larger than 2GB. Uploading via userbot...')
             await upd_dlg(Y)
             mtd = await get_video_metadata(f)
             dur, h, w = mtd['duration'], mtd['width'], mtd['height']
@@ -374,7 +374,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None, parse_mode=ParseMode.MARKDOWN,
                                             progress=prog, progress_args=(c, d, p.id, st))
             
-            await c.copy_message(d, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
+            await c.copy_message(tcid, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
             if sent:
                 try:
                     usr = await c.get_users(uid)
@@ -477,9 +477,7 @@ async def process_cmd(c, m):
     
     uc = await get_uclient(uid)
     if not uc:
-        await m.reply_text('⚠️ **Login Required**
-
-You must login using /login to extract links. The bot\'s internal session is disabled for downloading.')
+        await m.reply_text("⚠️ **Login Required**\n\nYou must login using /login to extract links. The bot's internal session is disabled for downloading.")
         return
         
     if is_user_active(uid):
