@@ -83,12 +83,21 @@ async def main():
         web_app.router.add_get('/health', lambda r: web.Response(text="OK"))
         runner = web.AppRunner(web_app)
         await runner.setup()
-        port = 3000
+        is_aistudio = bool(os.environ.get("APPLET_ID") or os.environ.get("K_SERVICE"))
+        port = 3000 if is_aistudio else int(os.environ.get("PORT", 3000))
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
         logger.info(f"Web dashboard started on port {port}.")
     except Exception as e:
         logger.warning(f"Failed to start web server: {e}")
+
+    # Check if running in AI Studio development preview environment
+    # In AI Studio preview, Telegram bot client startup is disabled to avoid AUTH_KEY_DUPLICATED conflict with Render.
+    # On Render (or production VPS), APPLET_ID is not present, so the bot starts automatically!
+    if is_aistudio or os.environ.get("RUN_TELEGRAM_BOT", "").lower() in ("0", "false", "no"):
+        logger.info("AI Studio environment detected: Telegram Bot is STOPPED here so it runs exclusively on Render without session conflicts.")
+        await asyncio.Event().wait()
+        return
 
     logger.info("Starting Telegram Restricted Content Saver Bot (Pyrogram + Telethon Engine)...")
     
@@ -114,6 +123,12 @@ async def main():
 
     await app.start()
     logger.info("Pyrogram Bot Client started successfully. Bot is fully online!")
+    
+    try:
+        from utils.func import load_db_peers_into_storage
+        await load_db_peers_into_storage(app)
+    except Exception as e:
+        logger.warning(f"Error loading cached peers into bot storage: {e}")
     
     await asyncio.Event().wait()
 

@@ -2,6 +2,7 @@
   "name": "telegram-saver",
   "version": "1.0.0",
   "scripts": {
+    "build": "python3 -m py_compile main.py",
     "start": "python3 main.py",
     "dev": "python3 main.py"
   }

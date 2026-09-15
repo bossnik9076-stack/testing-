@@ -442,19 +442,24 @@ async def btn_redeem_guide_cb(client: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex("^see_plan$"))
 async def see_plan_cb(client: Client, callback: CallbackQuery):
     plan_text = (
-        "👑 **ANANOMUSBRO EXCLUSIVE PRO PLAN** 👑\n"
+        "👑 **ANANOMUSBRO VIP PLANS** 👑\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🌟 **असीमित फीचर्स और स्पीड:** 🚀\n\n"
-        "✨ **No Size Limit** (कितनी भी बड़ी फाइल निकालें)\n"
-        "✨ **Unlimited Files** (रोज़ असीमित फाइलें डाउनलोड करें)\n"
-        "✨ **Ultra Fast Speed** (10-50 Mbps मैक्सिमम थ्रूपुट)\n"
-        "✨ **Custom Watermarking** (वीडियो पर अपना टेक्स्ट या लोगो लगाएं)\n"
-        "✨ **Private Restricted Access** (प्राइवेट चैनल्स अनलॉक)\n"
-        "✨ **Bulk Batch Extraction** (एक साथ हज़ारों फाइलें निकालें)\n"
+        "🌟 **प्रीमियम यूज़र्स के लिए 24*7 असीमित फाइल्स:** 🚀\n\n"
+        "📦 **1. BASIC PLAN:**\n"
+        "✨ रोज़ाना 24*7 फाइलें निकालें\n"
+        "✨ No Daily File Restriction\n"
+        "✨ Fast Download Speed\n"
+        "✨ Private & Public Channel Support\n"
+        "🏆 **कीमत:** एडमिन से संपर्क करें\n\n"
+        "🚀 **2. PRO PLAN (अनुशंसित):**\n"
+        "✨ असीमित फाइल्स 24*7 (No Limit)\n"
+        "✨ Ultra Fast Speed (10-50 Mbps)\n"
+        "✨ Bulk Batch Extraction (हज़ारों फाइलें एक साथ)\n"
+        "✨ Custom Watermark & Renaming\n"
+        "✨ VIP Priority Queue Access\n"
+        "🏆 **साप्ताहिक प्रो:** ₹200 (7 दिन)\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "💳 **प्लान मूल्य:**\n"
-        "🏆 **साप्ताहिक प्रो प्लान:** ₹200 (7 दिन)\n\n"
-        "🔗 **भुगतान माध्यम:** केवल UPI स्वीकार्य ✅"
+        "💳 **भुगतान माध्यम:** केवल UPI स्वीकार्य ✅"
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📜 नियम एवं शर्तें (Terms)", callback_data="see_terms")],
@@ -484,9 +489,18 @@ async def plan_cmd(client: Client, message: Message):
     except Exception: pass
     if await subscribe(client, message) == 1: return
     plan_text = (
-        "👑 **ANANOMUSBRO EXCLUSIVE PRO PLAN** 👑\n"
+        "👑 **ANANOMUSBRO VIP PLANS** 👑\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🏆 **साप्ताहिक प्रो प्लान:** ₹200 (7 दिन)\n\n"
+        "📦 **Basic Plan:**\n"
+        "✨ 24*7 असीमित फाइल्स\n"
+        "✨ Fast Speed & Private Link Support\n\n"
+        "🚀 **Pro Plan (अनुशंसित):**\n"
+        "✨ 24*7 Unlimited Files\n"
+        "✨ Maximum Ultra Fast Speed\n"
+        "✨ Bulk Batch Extraction (एक साथ हज़ारों फाइल्स)\n"
+        "✨ Custom Watermark & Renaming\n"
+        "🏆 **मूल्य:** ₹200 (7 दिन)\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
         "🔗 **भुगतान:** केवल UPI स्वीकार्य ✅"
     )
     kb = InlineKeyboardMarkup([

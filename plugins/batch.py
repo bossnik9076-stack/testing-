@@ -9,7 +9,10 @@ from pyrogram.errors import UserNotParticipant
 from pyrogram.enums import ParseMode
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
 from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata
-from utils.func import get_user_data_key, process_text_with_rules, is_premium_user, E
+from utils.func import (
+    get_user_data_key, process_text_with_rules, is_premium_user, E,
+    can_user_extract, record_user_extraction, parse_replacement_rules, save_user_data
+)
 from shared_client import app as X
 from plugins.settings import rename_file
 from plugins.start import subscribe as sub
@@ -77,6 +80,66 @@ def get_batch_info(user_id: int) -> Optional[Dict[str, Any]]:
     return ACTIVE_USERS.get(str(user_id))
 
 ACTIVE_USERS = load_active_users()
+
+# Fair Queue system to limit concurrent users to 3
+# 1GB RAM / 1 vCPU optimized: allows max 3 users at once
+# Other users wait in a fair FIFO rotation queue and get served sequentially (user 4, then 5, then 6...)
+MAX_CONCURRENT_USERS = 3
+TASK_QUEUE_LIST = []
+currently_processing_users = set()
+_queue_lock = asyncio.Lock()
+
+def release_task_slot(uid):
+    global TASK_QUEUE_LIST, currently_processing_users
+    if uid in currently_processing_users:
+        currently_processing_users.remove(uid)
+    if uid in TASK_QUEUE_LIST:
+        TASK_QUEUE_LIST.remove(uid)
+    # Give next user the slot from queue
+    if len(currently_processing_users) < MAX_CONCURRENT_USERS and TASK_QUEUE_LIST:
+        next_uid = TASK_QUEUE_LIST.pop(0)
+        currently_processing_users.add(next_uid)
+
+async def acquire_task_slot(uid, pt_message=None):
+    global TASK_QUEUE_LIST, currently_processing_users
+    async with _queue_lock:
+        if uid in currently_processing_users:
+            return True
+            
+        if len(currently_processing_users) < MAX_CONCURRENT_USERS:
+            currently_processing_users.add(uid)
+            return True
+            
+        if uid not in TASK_QUEUE_LIST:
+            TASK_QUEUE_LIST.append(uid)
+            
+    # If waiting, show dynamic download estimate without exposing queue position or waiting quota
+    wait_time = 5
+    while uid not in currently_processing_users:
+        if pt_message:
+            try:
+                await pt_message.edit(f'⏳ **डाउनलोडिंग प्रोसेस शुरू होने वाला है...**\n\nअनुमानित समय: ~{wait_time} सेकंड बाद डाउनलोड शुरू होगा...')
+            except Exception:
+                pass
+        await asyncio.sleep(4)
+        wait_time = max(2, wait_time - 1)
+        async with _queue_lock:
+            if len(currently_processing_users) < MAX_CONCURRENT_USERS:
+                if TASK_QUEUE_LIST and TASK_QUEUE_LIST[0] == uid:
+                    TASK_QUEUE_LIST.pop(0)
+                    currently_processing_users.add(uid)
+                    break
+                elif uid not in TASK_QUEUE_LIST:
+                    currently_processing_users.add(uid)
+                    break
+                    
+    if pt_message:
+        try:
+            await pt_message.edit('⏳ **डाउनलोडिंग प्रोसेस शुरू हो रहा है...**')
+        except Exception:
+            pass
+    return True
+
 
 async def upd_dlg(c):
     try:
@@ -213,7 +276,7 @@ async def prog(c, t, C, h, m, st):
         speed = c / (time.time() - st) / (1024 * 1024) if time.time() > st else 0
         eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
         try:
-            await C.edit_message_text(h, m, f"__**Transferring File...**__\n\n{bar}\n\n⚡ **Completed**: {c_mb:.2f} MB / {t_mb:.2f} MB\n📊 **Progress**: {p:.2f}%\n🚀 **Speed**: {speed:.2f} MB/s\n⏳ **ETA**: {eta}")
+            await C.edit_message_text(h, m, f"__**Processing...**__\n\n{bar}\n\n⚡ **Completed**: {c_mb:.2f} MB / {t_mb:.2f} MB\n🚀 **Speed**: {speed:.2f} MB/s\n⏳ **ETA**: {eta}")
         except Exception:
             pass
         if p >= 100: P.pop(m, None)
@@ -242,6 +305,51 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None):
         print(f'Direct send error: {e}')
         return False
 
+async def send_media_file(client, target_chat, f, m, ft, th, dur, h, w, prog, p, d, st, rtmid):
+    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv']
+    audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.opus', '.aiff', '.ac3']
+    file_ext = os.path.splitext(f)[1].lower()
+    caption_text = ft if ft else (m.caption if m.caption else None)
+    
+    if m.video or (m.document and file_ext in video_extensions):
+        return await client.send_video(
+            target_chat, video=f, caption=caption_text, parse_mode=ParseMode.MARKDOWN,
+            thumb=th, width=w, height=h, duration=dur,
+            progress=prog, progress_args=(client, d, p.id, st),
+            reply_to_message_id=rtmid
+        )
+    elif m.video_note:
+        return await client.send_video_note(
+            target_chat, video_note=f, progress=prog,
+            progress_args=(client, d, p.id, st), reply_to_message_id=rtmid
+        )
+    elif m.voice:
+        return await client.send_voice(
+            target_chat, f, progress=prog, progress_args=(client, d, p.id, st),
+            reply_to_message_id=rtmid
+        )
+    elif m.sticker:
+        return await client.send_sticker(target_chat, m.sticker.file_id, reply_to_message_id=rtmid)
+    elif m.audio or (m.document and file_ext in audio_extensions):
+        return await client.send_audio(
+            target_chat, audio=f, caption=caption_text, parse_mode=ParseMode.MARKDOWN,
+            thumb=th, progress=prog, progress_args=(client, d, p.id, st),
+            reply_to_message_id=rtmid
+        )
+    elif m.photo:
+        return await client.send_photo(
+            target_chat, photo=f, caption=caption_text, parse_mode=ParseMode.MARKDOWN,
+            progress=prog, progress_args=(client, d, p.id, st),
+            reply_to_message_id=rtmid
+        )
+    else:
+        return await client.send_document(
+            target_chat, document=f, caption=caption_text, parse_mode=ParseMode.MARKDOWN,
+            file_name=os.path.basename(f),
+            progress=prog, progress_args=(client, d, p.id, st),
+            reply_to_message_id=rtmid
+        )
+
 async def process_msg(c, u, m, d, lt, uid, i):
     try:
         cfg_chat = await get_user_data_key(d, 'chat_id', None)
@@ -249,19 +357,39 @@ async def process_msg(c, u, m, d, lt, uid, i):
         rtmid = None
         if cfg_chat:
             try:
-                if '/' in str(cfg_chat):
-                    parts = str(cfg_chat).split('/', 1)
-                    tcid = int(parts[0])
-                    rtmid = int(parts[1]) if len(parts) > 1 else None
+                str_cfg = str(cfg_chat).strip()
+                if '/' in str_cfg:
+                    parts = str_cfg.split('/', 1)
+                    target_part = parts[0].strip()
+                    tcid = int(target_part) if (target_part.startswith('-100') or target_part.lstrip('-').isdigit()) else target_part
+                    rtmid = int(parts[1]) if len(parts) > 1 and parts[1].strip().isdigit() else None
+                elif str_cfg.startswith('@'):
+                    tcid = str_cfg
+                elif str_cfg.startswith('-100') or str_cfg.lstrip('-').isdigit():
+                    tcid = int(str_cfg)
                 else:
-                    tcid = int(cfg_chat)
+                    tcid = str_cfg
             except Exception:
                 tcid = int(d)
         
-        orig_text = m.caption.markdown if m.caption else (m.text.markdown if m.text else '')
+        # Extract markdown preserving existing links/formatting
+        orig_text = ""
+        text_obj = m.caption or m.text
+        entities = m.caption_entities or m.entities
+        if text_obj and entities:
+            try:
+                from pyrogram.parser import Parser
+                orig_text = Parser.unparse(str(text_obj), entities, is_html=False)
+            except Exception:
+                pass
+        if not orig_text and hasattr(text_obj, 'markdown') and text_obj.markdown:
+            orig_text = str(text_obj.markdown)
+        if not orig_text:
+            orig_text = str(text_obj or '')
+
         proc_text = await process_text_with_rules(d, orig_text)
-        user_cap = await get_user_data_key(d, 'caption', '')
-        ft = f'{proc_text}\n\n{user_cap}' if proc_text and user_cap else user_cap if user_cap else proc_text
+        user_cap = await get_user_data_key(d, 'caption', '') or ''
+        ft = f'{proc_text}\n\n{user_cap}'.strip() if proc_text and user_cap else (user_cap or proc_text or None)
 
         # PUBLIC LINK -> DIRECT FORWARD / COPY AS REQUESTED
         if lt == 'public':
@@ -303,7 +431,21 @@ async def process_msg(c, u, m, d, lt, uid, i):
         # If it is a text-only message (no media)
         if not m.media:
             if m.text:
-                await c.send_message(tcid, text=ft if ft else m.text.markdown, reply_to_message_id=rtmid)
+                msg_text = ft if ft else (orig_text or m.text or '')
+                try:
+                    await c.send_message(tcid, text=msg_text, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                except Exception:
+                    try:
+                        await c.send_message(tcid, text=msg_text, reply_to_message_id=rtmid)
+                    except Exception as text_err:
+                        fallback_u = u if (u and u != c) else Y
+                        if fallback_u and tcid != int(d):
+                            try:
+                                await fallback_u.send_message(tcid, text=msg_text, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                            except Exception:
+                                await c.send_message(int(d), text=msg_text)
+                        else:
+                            await c.send_message(int(d), text=msg_text)
                 return 'Done.'
             return 'Empty message.'
 
@@ -337,11 +479,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
         except Exception:
             pass
 
-        if (
-            (m.video and m.video.file_name) or
-            (m.audio and m.audio.file_name) or
-            (m.document and m.document.file_name)
-        ):
+        if f and os.path.exists(f):
             f = await rename_file(f, d, p)
         
         fsize = os.path.getsize(f) / (1024 * 1024 * 1024)
@@ -393,41 +531,39 @@ async def process_msg(c, u, m, d, lt, uid, i):
         sent = None
 
         try:
-            video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv']
-            audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.opus', '.aiff', '.ac3']
-            file_ext = os.path.splitext(f)[1].lower()
-            if m.video or (m.document and file_ext in video_extensions):
-                mtd = await get_video_metadata(f)
-                dur, h, w = mtd['duration'], mtd['width'], mtd['height']
+            mtd = await get_video_metadata(f) if (m.video or f.endswith('.mp4') or f.endswith('.mkv')) else {'duration': None, 'width': None, 'height': None}
+            dur, h, w = mtd.get('duration'), mtd.get('width'), mtd.get('height')
+            if not th and dur:
                 th = await screenshot(f, dur, d)
-                sent = await c.send_video(tcid, video=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
-                                thumb=th, width=w, height=h, duration=dur, 
-                                progress=prog, progress_args=(c, d, p.id, st), 
-                                reply_to_message_id=rtmid)
-            elif m.video_note:
-                sent = await c.send_video_note(tcid, video_note=f, progress=prog, 
-                                    progress_args=(c, d, p.id, st), reply_to_message_id=rtmid)
-            elif m.voice:
-                sent = await c.send_voice(tcid, f, progress=prog, progress_args=(c, d, p.id, st), 
-                                reply_to_message_id=rtmid)
-            elif m.sticker:
-                sent = await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
-            elif m.audio or (m.document and file_ext in audio_extensions):
-                sent = await c.send_audio(tcid, audio=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
-                                thumb=th, progress=prog, progress_args=(c, d, p.id, st), 
-                                reply_to_message_id=rtmid)
-            elif m.photo:
-                sent = await c.send_photo(tcid, photo=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
-                                progress=prog, progress_args=(c, d, p.id, st), 
-                                reply_to_message_id=rtmid)
-            elif m.document:
-                sent = await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
-                                    progress=prog, progress_args=(c, d, p.id, st), 
-                                    reply_to_message_id=rtmid)
-            else:
-                sent = await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
-                                    progress=prog, progress_args=(c, d, p.id, st), 
-                                    reply_to_message_id=rtmid)
+
+            # 1. Try sending with bot (c) to target chat (tcid)
+            try:
+                sent = await send_media_file(c, tcid, f, m, ft, th, dur, h, w, prog, p, d, st, rtmid)
+            except Exception as bot_err:
+                err_text = str(bot_err)
+                is_peer_err = any(k in err_text for k in [
+                    "Peer id invalid", "PEER_ID_INVALID", "CHAT_ADMIN_REQUIRED",
+                    "CHANNEL_INVALID", "ChannelPrivate", "USER_IS_BLOCKED", "ChatAdminRequired"
+                ])
+                if is_peer_err and tcid != int(d):
+                    logger.warning(f"Bot failed sending to target chat {tcid} ({err_text}). Attempting userbot fallback...")
+                    fallback_u = u if (u and u != c) else Y
+                    if fallback_u:
+                        try:
+                            sent = await send_media_file(fallback_u, tcid, f, m, ft, th, dur, h, w, prog, p, d, st, rtmid)
+                            logger.info(f"Userbot successfully uploaded to target chat {tcid}.")
+                        except Exception as fb_err:
+                            logger.error(f"Userbot fallback send also failed: {fb_err}")
+                    
+                    if not sent:
+                        # Fallback to user private chat so media is never lost!
+                        try:
+                            await c.edit_message_text(d, p.id, '⚠️ टारगेट चैनल में बोट के पास भेजने की अनुमति नहीं मिली। फ़ाइल आपकी प्राइवेट चैट में भेजी जा रही है...')
+                            sent = await send_media_file(c, int(d), f, m, ft, th, dur, h, w, prog, p, d, st, None)
+                        except Exception:
+                            raise bot_err
+                else:
+                    raise bot_err
         except asyncio.CancelledError:
             if os.path.exists(f): os.remove(f)
             return 'Cancelled.'
@@ -470,6 +606,10 @@ async def process_msg(c, u, m, d, lt, uid, i):
 
 @X.on_message(filters.command(['batch', 'single']))
 async def process_cmd(c, m):
+    # Ensure queue processor is running
+    if not hasattr(process_cmd, "queue_started"):
+        asyncio.create_task(process_queue())
+        process_cmd.queue_started = True
     uid = m.from_user.id
     cmd = m.command[0]
     
@@ -515,6 +655,30 @@ async def text_handler(c, m):
             s = 'start_single'
             Z[uid] = {'step': 'start_single'}
         else:
+            # Check if user sent replacement words directly: 'word1' 'word2' or "word1" "word2"
+            rep_matches = parse_replacement_rules(L)
+            if rep_matches:
+                replacements = await get_user_data_key(uid, 'replacement_words', {}) or {}
+                added = []
+                for old_w, new_w in rep_matches:
+                    old_clean = old_w.strip()
+                    new_clean = new_w.strip()
+                    if old_clean:
+                        replacements[old_clean] = new_clean
+                        added.append(f"• `{old_clean}` ➔ `{new_clean}`")
+                if added:
+                    await save_user_data(uid, 'replacement_words', replacements)
+                    msg_txt = (
+                        "✅ **वर्ड रिप्लेसमेंट सफलतापूर्वक सेव हो गया!**\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        "🔄 **सहेजे गए नियम:**\n"
+                        + "\n".join(added) + "\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📊 **कुल एक्टिव नियम:** {len(replacements)}\n"
+                        "💡 अब आपकी सभी फ़ाइलों के नाम और कैप्शन में यह शब्द अपने आप बदल दिया जाएगा।"
+                    )
+                    await m.reply_text(msg_txt)
+                    return
             return
 
     if s == 'start':
@@ -535,6 +699,13 @@ async def text_handler(c, m):
             Z.pop(uid, None)
             return
 
+        # Check daily extraction limit for free users
+        can_extract, reason = await can_user_extract(uid)
+        if not can_extract:
+            await m.reply_text(reason)
+            Z.pop(uid, None)
+            return
+
         if is_user_active(uid):
             await m.reply_text('⚠️ Active task exists. Use /stop first.')
             Z.pop(uid, None)
@@ -542,9 +713,13 @@ async def text_handler(c, m):
 
         pt = await m.reply_text('⏳ Processing link...')
         
+        # Fair Queue: max 3 concurrent users
+        await acquire_task_slot(uid, pt)
+
         uc = await get_uclient(uid)
         if not uc:
             await pt.edit('⚠️ **Login Required**\n\nYou must login using /login to extract links. The bot\'s internal session is disabled for downloading.')
+            release_task_slot(uid)
             Z.pop(uid, None)
             return
             
@@ -557,11 +732,14 @@ async def text_handler(c, m):
                 except Exception:
                     pass
                 await m.reply_text(f'✅ Extracted: {res}')
+                # Record successful extraction count for user
+                await record_user_extraction(uid)
             else:
                 await pt.edit('❌ Message not found or unable to access.')
         except Exception as e:
             await pt.edit(f'❌ Error: {str(e)[:100]}')
         finally:
+            release_task_slot(uid)
             Z.pop(uid, None)
 
     elif s == 'count':
@@ -574,9 +752,20 @@ async def text_handler(c, m):
             await m.reply_text('❌ Please enter a number greater than 0.')
             return
             
-        maxlimit = PREMIUM_LIMIT
-        if count > maxlimit:
+        is_prem = await is_premium_user(uid)
+        maxlimit = PREMIUM_LIMIT if is_prem else FREEMIUM_LIMIT
+        if not is_prem and count > 1:
+            await m.reply_text("⚠️ **प्रीमियम आवश्यक (Premium Required)**\n\nफ्री यूज़र्स केवल 1 फाइल निकाल सकते हैं।\n24*7 असीमित फाइलों के लिए प्रीमियम लें! 💎\n\n👉 प्लान्स देखने के लिए /plan टाइप करें।")
+            return
+        elif is_prem and count > maxlimit:
             await m.reply_text(f'⚠️ Maximum batch limit is {maxlimit}.')
+            return
+
+        # Check daily limit for free user before starting batch
+        can_extract, reason = await can_user_extract(uid)
+        if not can_extract:
+            await m.reply_text(reason)
+            Z.pop(uid, None)
             return
 
         Z[uid].update({'step': 'process', 'did': str(m.chat.id), 'num': count})
@@ -584,14 +773,20 @@ async def text_handler(c, m):
         success = 0
 
         pt = await m.reply_text(f'⏳ Starting batch of {n} messages...')
+        
+        # Fair Queue: max 3 concurrent users
+        await acquire_task_slot(uid, pt)
+
         uc = await get_uclient(uid)
         if not uc:
             await pt.edit('⚠️ **Login Required**\n\nYou must login using /login to extract links. The bot\'s internal session is disabled for downloading.')
+            release_task_slot(uid)
             Z.pop(uid, None)
             return
             
         if is_user_active(uid):
             await pt.edit('⚠️ Active task exists. Use /stop first.')
+            release_task_slot(uid)
             Z.pop(uid, None)
             return
         
@@ -619,36 +814,26 @@ async def text_handler(c, m):
                 attempts += 1
                 
                 try:
+                    try:
+                        await pt.edit(f'⏳ **Processing...** ({success}/{n} files extracted)')
+                    except Exception:
+                        pass
                     msg = await get_msg(c, uc, i, mid, lt)
                     if msg:
                         has_media = getattr(msg, "media", None) is not None
-                        if not has_media:
-                            try:
-                                await pt.edit(f'📦 Batch Progress: {success}/{n} (Msg {mid} text/empty skipped) | ✅ Success: {success}')
-                            except Exception:
-                                pass
+                        # Don't skip if it has text, let it process
+                        if not has_media and not getattr(msg, "text", None):
                             continue
                             
                         res = await process_msg(c, uc, msg, str(m.chat.id), lt, uid, i)
-                        if 'Done' in res or 'Copied' in res or 'Sent' in res or 'Forwarded' in res:
+                        if res and any(x in res for x in ['Done', 'Copied', 'Sent', 'Forwarded']):
                             success += 1
-                        try:
-                            await pt.edit(f'📦 Batch Progress: {success}/{n} | ✅ Success: {success}')
-                        except Exception:
-                            pass
-                    else:
-                        try:
-                            await pt.edit(f'📦 Batch Progress: {success}/{n} (Msg {mid} not found) | ✅ Success: {success}')
-                        except Exception:
-                            pass
+                            await record_user_extraction(uid)
                 except asyncio.CancelledError:
                     await pt.edit(f'🛑 Batch cancelled. Success: {success}/{n}')
                     break
                 except Exception as e:
-                    try:
-                        await pt.edit(f'📦 Batch Progress: {success}/{n}: Error - {str(e)[:40]}')
-                    except Exception:
-                        pass
+                    pass
                 
                 await asyncio.sleep(2)
             
@@ -657,6 +842,7 @@ async def text_handler(c, m):
             else:
                 await m.reply_text(f'🎉 **Batch Completed!**\n\n✅ Successfully saved: {success}/{n}')
         finally:
+            release_task_slot(uid)
             await remove_active_batch(uid)
             Z.pop(uid, None)
 

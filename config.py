@@ -41,8 +41,8 @@ DEFAULT_THUMB = os.getenv("DEFAULT_THUMB", "default_thumb.jpg")
 DEFAULT_THUMB_URL = "https://i.postimg.cc/2ysJtXKC/nikhil.png"
 THUMB_DIR = os.path.join(os.path.dirname(__file__), "thumbnails")
 
-FREEMIUM_LIMIT = int(os.getenv("FREEMIUM_LIMIT", "1000"))
-PREMIUM_LIMIT  = int(os.getenv("PREMIUM_LIMIT", "1000"))
+FREEMIUM_LIMIT = int(os.getenv("FREEMIUM_LIMIT", "1"))
+PREMIUM_LIMIT  = int(os.getenv("PREMIUM_LIMIT", "50000"))
 MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "100"))
 
 JOIN_LINK     = os.getenv("JOIN_LINK", "https://t.me/nikbotchannel")

@@ -4,6 +4,7 @@
 
 import re
 import os
+import time
 import logging
 from telethon import events, Button
 from pyrogram import filters
@@ -15,7 +16,7 @@ from shared_client import client as gf, app as pyapp
 from config import OWNER_ID, LOG_GROUP
 from utils.func import (
     get_user_data_key, save_user_data, users_collection, is_premium_user,
-    send_to_log_group
+    send_to_log_group, parse_replacement_rules
 )
 from utils.custom_filters import (
     settings_in_progress, set_settings_step, get_settings_step
@@ -232,8 +233,12 @@ async def py_settings_step_trigger(client, callback: CallbackQuery):
             "`'पुराना_शब्द' 'नया_शब्द'`\n"
             "या\n"
             "`\"पुराना_शब्द\" \"नया_शब्द\"`\n\n"
+            "🔗 **लिंक / हाइपरलिंक सपोर्ट (Link / Hyperlink):**\n"
+            "• आप `'नया_शब्द'` पर क्लिक करके **'Create Link'** से लिंक भी लगा सकते हैं!\n"
+            "• बॉट आपके नए शब्द को लिंक सहित कैप्शन में बदल देगा!\n\n"
             "💡 **उदाहरण (Examples):**\n"
             "• `'Join @OldChannel' '@MyNewChannel'`\n"
+            "• `'OldChannel' '[MyChannel](https://t.me/mychannel)'`\n"
             "• `'Download Free' 'Team Ananomus'`\n"
             "• आप एक साथ कई लाइनें भी भेज सकते हैं:\n"
             "`'OldWord1' 'NewWord1'`\n"
@@ -296,6 +301,7 @@ async def py_settings_text_handler(client, message: Message):
         return
     user_id = message.from_user.id
     step = get_settings_step(user_id)
+    raw_text = extract_message_markdown(message).strip()
     text = (message.text or "").strip()
 
     if not step:
@@ -312,7 +318,7 @@ async def py_settings_text_handler(client, message: Message):
     ])
 
     if step == "setreplacement":
-        matches = re.findall(r"""['"]([^'"]+)['"]\s*['"]([^'"]*)['"]""", text)
+        matches = parse_replacement_rules(raw_text or text)
         if matches:
             replacements = await get_user_data_key(user_id, 'replacement_words', {}) or {}
             added_rules = []
@@ -321,7 +327,10 @@ async def py_settings_text_handler(client, message: Message):
                 new_clean = new_w.strip()
                 if old_clean:
                     replacements[old_clean] = new_clean
-                    added_rules.append(f"• `{old_clean}` ➔ `{new_clean}`")
+                    if new_clean.startswith('[') and '](' in new_clean and new_clean.endswith(')'):
+                        added_rules.append(f"• `{old_clean}` ➔ {new_clean}")
+                    else:
+                        added_rules.append(f"• `{old_clean}` ➔ `{new_clean}`")
 
             if added_rules:
                 await save_user_data(user_id, 'replacement_words', replacements)
@@ -456,13 +465,38 @@ async def py_settings_text_handler(client, message: Message):
         if re.match(r"^(-?\d+)(/\d+)?$", target) or re.match(r"^@[a-zA-Z0-9_]{4,}$", target):
             await save_user_data(user_id, 'chat_id', target)
             set_settings_step(user_id, None)
+
+            clean_target = target.split('/')[0] if '/' in target else target
+            parsed_id = int(clean_target) if (clean_target.startswith('-100') or clean_target.lstrip('-').isdigit()) else clean_target
+
+            chat_title = None
+            verified = False
+            try:
+                chat_obj = await message._client.get_chat(parsed_id)
+                chat_title = chat_obj.title or str(parsed_id)
+                verified = True
+            except Exception:
+                from shared_client import userbot
+                if userbot:
+                    try:
+                        chat_obj = await userbot.get_chat(parsed_id)
+                        chat_title = chat_obj.title or str(parsed_id)
+                        verified = True
+                    except Exception:
+                        pass
+
+            if verified and chat_title:
+                status_str = f"📢 **चैनल/ग्रुप का नाम:** `{chat_title}`\n✅ **स्टेटस:** वेरिफ़ाइड और एक्टिव"
+            else:
+                status_str = "⚠️ **ध्यान दें:** सुनिश्चित करें कि बॉट आपके चैनल/ग्रुप में **Admin** है और उसके पास **Post Messages** की अनुमति है।"
+
             res_text = (
                 "✅ **टारगेट चैट ID सफलतापूर्वक सेव हो गई!** 📢\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"🎯 **सेट की गई ID:** `{target}`\n"
+                f"{status_str}\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "💡 अब बॉट द्वारा डाउनलोड की जाने वाली सभी फाइल्स सीधे इसी चैनल/ग्रुप में भेजी जाएँगी।\n\n"
-                "⚠️ **ध्यान दें:** सुनिश्चित करें कि बॉट आपके उस चैनल/ग्रुप में **Admin** है और उसके पास मैसेज भेजने की अनुमति है।"
+                "💡 अब बॉट द्वारा डाउनलोड की जाने वाली सभी फाइल्स सीधे इसी चैनल/ग्रुप में भेजी जाएँगी।"
             )
             if LOG_GROUP:
                 try:
@@ -649,10 +683,11 @@ async def direct_setreplacement_cmd(client, message: Message):
     except Exception: pass
     if await sub(client, message) == 1: return
     user_id = message.from_user.id
-    parts = message.text.strip().split(maxsplit=1)
+    raw_text = extract_message_markdown(message)
+    parts = raw_text.strip().split(maxsplit=1)
     if len(parts) < 2:
         return await message.reply_text("👉 **उपयोग:** `/setreplacement 'पुराना_शब्द' 'नया_शब्द'`")
-    matches = re.findall(r"""['"]([^'"]+)['"]\s*['"]([^'"]*)['"]""", parts[1])
+    matches = parse_replacement_rules(parts[1])
     if matches:
         replacements = await get_user_data_key(user_id, 'replacement_words', {}) or {}
         added = []
@@ -661,7 +696,10 @@ async def direct_setreplacement_cmd(client, message: Message):
             new_clean = new_w.strip()
             if old_clean:
                 replacements[old_clean] = new_clean
-                added.append(f"• `{old_clean}` ➔ `{new_clean}`")
+                if new_clean.startswith('[') and '](' in new_clean and new_clean.endswith(')'):
+                    added.append(f"• `{old_clean}` ➔ {new_clean}")
+                else:
+                    added.append(f"• `{old_clean}` ➔ `{new_clean}`")
         await save_user_data(user_id, 'replacement_words', replacements)
         await message.reply_text(f"✅ **वर्ड रिप्लेसमेंट सेव हुआ!**\n" + "\n".join(added))
     else:
@@ -808,7 +846,16 @@ if gf:
                 await event.respond("❌ कृपया कम से कम एक शब्द स्पेस देकर भेजें।")
                 
         elif conv_type == 'setreplacement':
-            matches = re.findall(r"""['"]([^'"]+)['"]\s*['"]([^'"]*)['"]""", text)
+            raw_text = ""
+            if hasattr(event.message, 'entities') and event.message.entities:
+                try:
+                    from telethon.extensions import markdown
+                    raw_text = markdown.unparse(event.message.message, event.message.entities)
+                except Exception:
+                    raw_text = event.text or event.message.message or ""
+            else:
+                raw_text = event.text or event.message.message or ""
+            matches = parse_replacement_rules(raw_text)
             if matches:
                 replacements = await get_user_data_key(user_id, 'replacement_words', {}) or {}
                 added = []
@@ -817,44 +864,64 @@ if gf:
                     new_clean = new_w.strip()
                     if old_clean:
                         replacements[old_clean] = new_clean
-                        added.append(f"• `{old_clean}` ➔ `{new_clean}`")
+                        if new_clean.startswith('[') and '](' in new_clean and new_clean.endswith(')'):
+                            added.append(f"• `{old_clean}` ➔ {new_clean}")
+                        else:
+                            added.append(f"• `{old_clean}` ➔ `{new_clean}`")
                 await save_user_data(user_id, 'replacement_words', replacements)
                 await event.respond(f"✅ वर्ड रिप्लेसमेंट सेव हुआ!\n" + "\n".join(added))
                 del active_conversations[user_id]
             else:
                 await event.respond("❌ **अमान्य फॉर्मेट!** कृपया `'पुराना_शब्द' 'नया_शब्द'` फॉर्मेट में भेजें।")
 
-async def rename_file(file, sender, edit):
+async def rename_file(file, sender, edit=None):
     try:
-        delete_words = await get_user_data_key(sender, 'delete_words', []) or []
-        custom_rename_tag = await get_user_data_key(sender, 'rename_tag', '') or ''
-        replacements = await get_user_data_key(sender, 'replacement_words', {}) or {}
+        delete_words = await get_user_data_key(int(sender), 'delete_words', []) or []
+        custom_rename_tag = await get_user_data_key(int(sender), 'rename_tag', '') or ''
+        replacements = await get_user_data_key(int(sender), 'replacement_words', {}) or {}
         
-        last_dot_index = str(file).rfind('.')
-        if last_dot_index > 0:
-            original_file_name = str(file)[:last_dot_index]
-            file_extension = str(file)[last_dot_index + 1:]
-        else:
-            original_file_name = str(file)
-            file_extension = 'mp4'
+        dirname, filename = os.path.split(str(file))
+        file_base, file_ext = os.path.splitext(filename)
+        ext = file_ext.lstrip('.') or 'mp4'
         
-        for word in delete_words:
-            if word:
-                original_file_name = original_file_name.replace(word, '')
+        clean_name = file_base
         
+        # 1. Apply replacements (case-insensitive, stripping any markdown links for clean filenames)
         for word, replace_word in replacements.items():
             if word:
-                original_file_name = original_file_name.replace(word, replace_word)
-        
-        original_file_name = re.sub(r'\s+', ' ', original_file_name).strip()
-        
-        if custom_rename_tag:
-            new_file_name = f"{original_file_name} {custom_rename_tag}".strip() + f".{file_extension}"
-        else:
-            new_file_name = f"{original_file_name}".strip() + f".{file_extension}"
+                rep_str = strip_markdown_link(str(replace_word or ''))
+                try:
+                    pattern = re.compile(re.escape(word), re.IGNORECASE)
+                    clean_name = pattern.sub(lambda m, r=rep_str: r, clean_name)
+                except Exception:
+                    clean_name = clean_name.replace(word, rep_str)
+                    
+        # 2. Apply delete words (case-insensitive)
+        for word in delete_words:
+            if word:
+                try:
+                    pattern = re.compile(re.escape(word), re.IGNORECASE)
+                    clean_name = pattern.sub('', clean_name)
+                except Exception:
+                    clean_name = clean_name.replace(word, '')
+                    
+        # 3. Clean up empty brackets and consecutive spaces/underscores
+        clean_name = re.sub(r'\[\s*\]|\(\s*\)|\{\s*\}', '', clean_name)
+        clean_name = re.sub(r'[\s_]+', ' ', clean_name).strip(' .-_')
+        if not clean_name:
+            clean_name = f"file_{int(time.time())}"
             
-        os.rename(file, new_file_name)
-        return new_file_name
+        # 4. Append custom tag
+        if custom_rename_tag:
+            clean_name = f"{clean_name} {custom_rename_tag}".strip()
+            
+        new_filename = f"{clean_name}.{ext}"
+        new_file_path = os.path.join(dirname, new_filename) if dirname else new_filename
+        
+        if new_file_path != file and os.path.exists(file):
+            os.rename(file, new_file_path)
+            return new_file_path
+        return file
     except Exception as e:
         logger.error(f"Rename error: {e}")
         return file

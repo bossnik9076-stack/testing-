@@ -1,0 +1,10 @@
+
+> telegram-saver@1.0.0 dev
+> python3 main.py
+
+Traceback (most recent call last):
+  File "/app/applet/main.py", line 12, in <module>
+    from shared_client import app, client as tele_client
+  File "/app/applet/shared_client.py", line 11, in <module>
+    from pyrogram import Client as PyroClient
+ModuleNotFoundError: No module named 'pyrogram'

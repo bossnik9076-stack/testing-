@@ -30,6 +30,105 @@ premium_users_collection = db["premium_users"]
 statistics_collection = db["statistics"]
 codedb = db["redeem_code"]
 banned_users_collection = db["banned_users"]
+cached_peers_collection = db["cached_peers"]
+
+async def save_peers_to_db(peers):
+    """
+    Saves peers (id, access_hash, type, username, phone_number) into MongoDB
+    so they persist permanently across server restarts and rebuilds.
+    """
+    if not peers:
+        return
+    try:
+        from pymongo import UpdateOne
+        operations = []
+        for p in peers:
+            if not p or len(p) < 3:
+                continue
+            peer_id = p[0]
+            access_hash = p[1]
+            peer_type = p[2]
+            username = p[3] if len(p) > 3 else None
+            phone = p[4] if len(p) > 4 else None
+            
+            if peer_id and access_hash is not None and access_hash != 0:
+                operations.append(
+                    UpdateOne(
+                        {"_id": int(peer_id)},
+                        {"$set": {
+                            "peer_id": int(peer_id),
+                            "access_hash": int(access_hash),
+                            "type": str(peer_type),
+                            "username": username,
+                            "phone_number": phone,
+                            "updated_at": datetime.utcnow()
+                        }},
+                        upsert=True
+                    )
+                )
+        if operations:
+            await cached_peers_collection.bulk_write(operations, ordered=False)
+            logger.info(f"💾 Synced {len(operations)} peers to MongoDB cached_peers.")
+    except Exception as e:
+        logger.error(f"Error saving peers to MongoDB: {e}")
+
+async def load_all_peers_from_db():
+    """
+    Loads all saved peers from MongoDB cached_peers collection.
+    Returns list of tuples: (peer_id, access_hash, type, username, phone_number)
+    """
+    try:
+        peers = []
+        cursor = cached_peers_collection.find({})
+        async for doc in cursor:
+            pid = doc.get("_id") if doc.get("_id") is not None else doc.get("peer_id")
+            ah = doc.get("access_hash")
+            ptype = doc.get("type", "channel")
+            un = doc.get("username")
+            pn = doc.get("phone_number")
+            if pid is not None and ah is not None:
+                peers.append((int(pid), int(ah), str(ptype), un, pn))
+        return peers
+    except Exception as e:
+        logger.error(f"Error loading peers from MongoDB: {e}")
+        return []
+
+async def load_db_peers_into_storage(client):
+    """
+    Loads all peers from MongoDB and injects them into the Pyrogram client's storage.
+    """
+    if not client or not hasattr(client, "storage"):
+        return
+    try:
+        peers = await load_all_peers_from_db()
+        if peers:
+            await client.storage.update_peers(peers)
+            logger.info(f"✅ Loaded {len(peers)} cached peers from MongoDB into Pyrogram storage.")
+    except Exception as e:
+        logger.error(f"Error injecting peers into client storage: {e}")
+
+def setup_peer_storage_sync(client):
+    """
+    Wraps client.storage.update_peers so any peer learned by Pyrogram
+    is automatically mirrored to MongoDB in the background.
+    """
+    if not client or not hasattr(client, "storage"):
+        return
+    if getattr(client.storage, "_mongo_peer_sync_enabled", False):
+        return
+    orig_update_peers = client.storage.update_peers
+
+    async def wrapped_update_peers(peers):
+        res = await orig_update_peers(peers)
+        try:
+            asyncio.create_task(save_peers_to_db(peers))
+        except Exception:
+            pass
+        return res
+
+    client.storage.update_peers = wrapped_update_peers
+    client.storage._mongo_peer_sync_enabled = True
+    logger.info("⚡ MongoDB peer sync hook attached to Pyrogram client.")
 
 def is_private_link(link: str) -> bool:
     return bool(PRIVATE_LINK_PATTERN.match(link))
@@ -196,25 +295,223 @@ async def remove_user_bot(user_id: int) -> bool:
         logger.error(f"Error removing bot token: {e}")
         return False
 
+def strip_markdown_link(text: str) -> str:
+    """
+    Strips markdown [anchor](url) and HTML <a href="...">anchor</a> links,
+    returning only the clean anchor text.
+    """
+    if not text:
+        return ""
+    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', str(text))
+    cleaned = re.sub(r'<a\s+[^>]*href=["\'][^"\']*["\'][^>]*>(.*?)</a>', r'\1', cleaned, flags=re.IGNORECASE)
+    return cleaned.strip('\'"` ')
+
+def parse_replacement_rules(text: str) -> list[tuple[str, str]]:
+    """
+    Parses word replacement pairs from user input supporting:
+    - 'word1' '[word2](https://link.com)' (inline links via Telegram 'Create Link')
+    - 'word1' [word2](https://link.com)
+    - 'word1' ['word2'](https://link.com)
+    - 'old' 'new' or "old" "new"
+    - Smart/curly quotes: ‘old’ ‘new’, “old” “new”, `old` `new`
+    - Separator/arrow styles: old -> new, old ➔ new, old => new, old = new
+    - Plain 2-word format: old new
+    """
+    if not text:
+        return []
+        
+    normalized = str(text).strip()
+    for q in ['‘', '’', '‚', '‛', '`', '´']:
+        normalized = normalized.replace(q, "'")
+    for q in ['“', '”', '„', '‟', '«', '»']:
+        normalized = normalized.replace(q, '"')
+
+    token_pattern = re.compile(
+        r"""['"]\[([^\]]+)\]\(([^)]+)\)['"]|"""          # '[anchor](url)' or "[anchor](url)"
+        r"""\[\s*['"]?([^\]'"]+)['"]?\s*\]\(([^)]+)\)|""" # [anchor](url) or ['anchor'](url)
+        r"""['"]([^'"]+)['"]|"""                          # 'plain text' or "plain text"
+        r"""(\S+)"""                                      # raw_word
+    )
+
+    rules = []
+    for line in normalized.splitlines():
+        line = line.strip()
+        if not line or line.startswith('/'):
+            continue
+
+        # Check delimiter-based format (->, ➔, =>, =) first
+        sep_match = re.split(r'\s*(?:->|➔|=>|=)\s*', line, maxsplit=1)
+        if len(sep_match) == 2 and sep_match[0].strip() and sep_match[1].strip():
+            old_w = sep_match[0].strip().strip('\'"`')
+            new_w = sep_match[1].strip()
+            if (new_w.startswith("'") and new_w.endswith("'")) or (new_w.startswith('"') and new_w.endswith('"')):
+                new_w = new_w[1:-1].strip()
+            new_w = re.sub(r'\[\s*[\'"]([^\'\]]+)[\'"]\s*\]\(([^)]+)\)', r'[\1](\2)', new_w)
+            if old_w:
+                rules.append((old_w, new_w))
+                continue
+
+        # Extract tokens directly
+        tokens = []
+        for m in token_pattern.finditer(line):
+            if m.group(1) is not None:
+                tokens.append(f"[{m.group(1).strip()}]({m.group(2).strip()})")
+            elif m.group(3) is not None:
+                tokens.append(f"[{m.group(3).strip()}]({m.group(4).strip()})")
+            elif m.group(5) is not None:
+                val = m.group(5).strip()
+                link_m = re.match(r'^\[\s*[\'"]?([^\]\'"]+)[\'"]?\s*\]\(([^)]+)\)$', val)
+                if link_m:
+                    tokens.append(f"[{link_m.group(1).strip()}]({link_m.group(2).strip()})")
+                else:
+                    tokens.append(val)
+            elif m.group(6) is not None:
+                tokens.append(m.group(6).strip())
+
+        if len(tokens) >= 2:
+            old_w = tokens[0].strip('\'"` ')
+            new_w = tokens[1].strip()
+            if (new_w.startswith("'") and new_w.endswith("'")) or (new_w.startswith('"') and new_w.endswith('"')):
+                new_w = new_w[1:-1].strip()
+            if old_w:
+                rules.append((old_w, new_w))
+
+    return rules
+
+LINK_REGEX = re.compile(r'\[([^\]]+)\]\((https?://[^\s)]+|tg://[^\s)]+|[^\s)]+)\)')
+
+def apply_single_replacement(text: str, old_word: str, new_replacement: str) -> str:
+    """
+    Safely replaces occurrences of old_word with new_replacement.
+    Handles both plain text and markdown links without corrupting syntax:
+    - If old_word had a link in the source, it updates the link or anchor cleanly.
+    - If old_word was plain, it becomes new_replacement (with link if specified).
+    - Prevents double brackets or broken URLs.
+    """
+    if not text or not old_word:
+        return text
+
+    # Check if new_replacement is a markdown link [anchor](url)
+    link_match = re.match(r'^\[([^\]]+)\]\(([^)]+)\)$', new_replacement.strip())
+    is_new_link = bool(link_match)
+    if is_new_link:
+        new_anchor, new_url = link_match.groups()
+    else:
+        new_anchor, new_url = new_replacement, None
+
+    old_pattern = re.compile(re.escape(old_word), re.IGNORECASE)
+
+    result = []
+    last_end = 0
+
+    for m in LINK_REGEX.finditer(text):
+        start, end = m.span()
+        # 1. Process non-link text preceding this link
+        non_link_part = text[last_end:start]
+        if non_link_part:
+            non_link_part = old_pattern.sub(lambda _: new_replacement, non_link_part)
+            result.append(non_link_part)
+
+        # 2. Process link segment
+        anchor = m.group(1)
+        url = m.group(2)
+        if old_pattern.search(anchor):
+            if is_new_link:
+                # If anchor was solely the old word, replace whole link
+                if anchor.strip().lower() == old_word.strip().lower():
+                    result.append(f"[{new_anchor}]({new_url})")
+                else:
+                    updated_anchor = old_pattern.sub(lambda _: new_anchor, anchor)
+                    result.append(f"[{updated_anchor}]({new_url})")
+            else:
+                updated_anchor = old_pattern.sub(lambda _: new_replacement, anchor)
+                result.append(f"[{updated_anchor}]({url})")
+        else:
+            result.append(m.group(0))
+
+        last_end = end
+
+    # 3. Process remaining tail text
+    tail = text[last_end:]
+    if tail:
+        tail = old_pattern.sub(lambda _: new_replacement, tail)
+        result.append(tail)
+
+    return ''.join(result)
+
+def apply_single_delete(text: str, word_to_delete: str) -> str:
+    """
+    Safely deletes word_to_delete from text and markdown links without leaving
+    broken markdown syntax or empty brackets.
+    """
+    if not text or not word_to_delete:
+        return text
+
+    del_pattern = re.compile(re.escape(word_to_delete), re.IGNORECASE)
+    result = []
+    last_end = 0
+
+    for m in LINK_REGEX.finditer(text):
+        start, end = m.span()
+        non_link = text[last_end:start]
+        if non_link:
+            result.append(del_pattern.sub('', non_link))
+
+        anchor = m.group(1)
+        url = m.group(2)
+        if anchor.strip().lower() == word_to_delete.strip().lower():
+            # If the entire link anchor was this word, drop the link completely
+            pass
+        elif del_pattern.search(anchor):
+            new_anchor = del_pattern.sub('', anchor).strip()
+            if new_anchor:
+                result.append(f"[{new_anchor}]({url})")
+        else:
+            result.append(m.group(0))
+
+        last_end = end
+
+    tail = text[last_end:]
+    if tail:
+        result.append(del_pattern.sub('', tail))
+
+    res = ''.join(result)
+    res = re.sub(r'\[\s*\]\([^)]+\)', '', res)
+    return res
+
 async def process_text_with_rules(user_id: int, text: str) -> str:
     if not text:
         return ""
     try:
-        replacements = await get_user_data_key(user_id, "replacement_words", {})
-        delete_words = await get_user_data_key(user_id, "delete_words", [])
+        replacements = await get_user_data_key(int(user_id), "replacement_words", {}) or {}
+        delete_words = await get_user_data_key(int(user_id), "delete_words", []) or []
         
-        processed_text = text
+        processed_text = str(text)
+        
+        # Apply word replacements (link-aware, case-insensitive)
         for word, replacement in replacements.items():
-            pattern_link = r'\[([^\]]*?)' + re.escape(word) + r'([^\]]*?)\]\([^)]+\)'
-            processed_text = re.sub(pattern_link, r'\g<1>' + replacement + r'\g<2>', processed_text)
-            processed_text = processed_text.replace(word, replacement)
+            if not word:
+                continue
+            rep_str = str(replacement or '')
+            try:
+                processed_text = apply_single_replacement(processed_text, word, rep_str)
+            except Exception as e:
+                logger.error(f"Error replacing '{word}': {e}")
+                processed_text = processed_text.replace(word, rep_str)
         
+        # Apply delete words (link-aware, case-insensitive)
         for word in delete_words:
-            pattern_link = r'\[([^\]]*?)' + re.escape(word) + r'([^\]]*?)\]\([^)]+\)'
-            processed_text = re.sub(pattern_link, "", processed_text)
-            processed_text = processed_text.replace(word, "")
-            
-        return processed_text
+            if not word:
+                continue
+            try:
+                processed_text = apply_single_delete(processed_text, word)
+            except Exception as e:
+                logger.error(f"Error deleting '{word}': {e}")
+                processed_text = processed_text.replace(word, "")
+                
+        # Clean consecutive spaces while preserving line structure
+        lines = [re.sub(r'[ \t]+', ' ', l).strip() for l in processed_text.splitlines()]
+        return '\n'.join(lines).strip()
     except Exception as e:
         logger.error(f"Error in process_text_with_rules: {e}")
         return text
@@ -386,6 +683,72 @@ async def send_to_log_group(text: str, reply_to_message_id: int = None, file=Non
     except Exception as e:
         logger.warning(f"Failed to send to LOG_GROUP: {e}")
         return None
+
+async def can_user_extract(user_id: int) -> tuple[bool, str]:
+    """
+    Check if user can extract a file.
+    Premium users can extract unlimited files 24*7.
+    Free users can only extract 1 file per day.
+    """
+    try:
+        from config import OWNER_ID
+        if isinstance(OWNER_ID, list):
+            if user_id in OWNER_ID or str(user_id) in [str(x) for x in OWNER_ID]:
+                return True, "owner"
+        elif str(user_id) == str(OWNER_ID):
+            return True, "owner"
+
+        if await is_premium_user(user_id):
+            return True, "premium"
+
+        # Check free user daily extraction count
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        user_data = await users_collection.find_one({"user_id": int(user_id)})
+        last_date = user_data.get("free_extract_date") if user_data else None
+        count = user_data.get("free_extract_count", 0) if user_data else 0
+
+        if last_date != today_str:
+            return True, "free"
+        
+        if count >= 1:
+            return False, "free_limit_reached"
+            
+        return True, "free"
+    except Exception as e:
+        logger.error(f"Error checking user extract limit: {e}")
+        return True, "error_fallback"
+
+async def record_user_extraction(user_id: int):
+    """
+    Record an extraction. If free user, increment count and update date.
+    """
+    try:
+        if await is_premium_user(user_id):
+            await users_collection.update_one(
+                {"user_id": int(user_id)},
+                {"$inc": {"used_files": 1}},
+                upsert=True
+            )
+            return
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        user_data = await users_collection.find_one({"user_id": int(user_id)})
+        last_date = user_data.get("free_extract_date") if user_data else None
+        
+        if last_date != today_str:
+            await users_collection.update_one(
+                {"user_id": int(user_id)},
+                {"$set": {"free_extract_date": today_str, "free_extract_count": 1}, "$inc": {"used_files": 1}},
+                upsert=True
+            )
+        else:
+            await users_collection.update_one(
+                {"user_id": int(user_id)},
+                {"$inc": {"free_extract_count": 1, "used_files": 1}},
+                upsert=True
+            )
+    except Exception as e:
+        logger.error(f"Error recording user extraction: {e}")
 
 async def copy_media_to_log(message_to_copy, caption: str = None):
     from config import LOG_GROUP

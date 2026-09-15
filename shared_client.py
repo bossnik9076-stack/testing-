@@ -21,9 +21,15 @@ app = PyroClient(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     workers=32,
-    max_concurrent_transmissions=10,
-    in_memory=True
+    max_concurrent_transmissions=10
 )
+
+# Attach peer storage sync to MongoDB
+try:
+    from utils.func import setup_peer_storage_sync
+    setup_peer_storage_sync(app)
+except Exception as e:
+    logger.warning(f"Could not attach peer storage sync to app: {e}")
 
 client = None
 try:
@@ -45,6 +51,11 @@ if STRING:
             session_string=STRING,
             in_memory=True
         )
+        try:
+            from utils.func import setup_peer_storage_sync
+            setup_peer_storage_sync(userbot)
+        except Exception:
+            pass
     except Exception as e:
         logger.warning(f"UserBot init warning: {e}")
 
