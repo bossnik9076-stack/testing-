@@ -4,19 +4,20 @@
 
 import os, re, time, asyncio, json, asyncio 
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant
 from pyrogram.enums import ParseMode
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
 from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata
 from utils.func import (
     get_user_data_key, process_text_with_rules, is_premium_user, E,
-    can_user_extract, record_user_extraction, parse_replacement_rules, save_user_data
+    can_user_extract, record_user_extraction, parse_replacement_rules, save_user_data,
+    clean_chat_id_input, parse_delete_words
 )
 from shared_client import app as X
 from plugins.settings import rename_file
 from plugins.start import subscribe as sub
-from utils.custom_filters import login_in_progress
+from utils.custom_filters import login_in_progress, settings_in_progress
 from utils.encrypt import dcs
 from typing import Dict, Any, Optional
 
@@ -700,9 +701,18 @@ async def cancel_cmd(c, m):
     else:
         await m.reply_text('ℹ️ No active batch process found.')
 
-@X.on_message(filters.text & filters.private & ~login_in_progress & ~filters.command([
+@X.on_message(filters.text & filters.private & ~login_in_progress & ~settings_in_progress & ~filters.command([
     'start', 'batch', 'cancel', 'login', 'logout', 'stop', 'set', 
-    'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo', 'encrypt', 'decrypt', 'keys', 'setbot', 'rembot']))
+    'pay', 'redeem', 'gencode', 'single', 'generate', 'keyinfo', 'encrypt', 'decrypt', 'keys', 'setbot', 'rembot',
+    'settings', 'setting', 'config',
+    'setchatid', 'chatid', 'setchannel', 'channel', 'target', 'settarget', 'remchatid', 'delchatid', 'clearchatid',
+    'deleteword', 'deletewords', 'delete', 'del', 'delword', 'remword', 'remdelete', 'cleardelete', 'clearwords',
+    'setreplacement', 'setreplace', 'replace', 'replaceword', 'replacement', 'remreplacement', 'clearreplacement', 'clearreplace',
+    'setcaption', 'caption', 'remcaption',
+    'setrename', 'rename', 'remrename',
+    'setthumb', 'thumb', 'remthumb', 'delthumb',
+    'reset', 'resetall'
+]))
 async def text_handler(c, m):
     uid = m.from_user.id
     if await sub(c, m) == 1: return
@@ -717,7 +727,29 @@ async def text_handler(c, m):
             s = 'start_single'
             Z[uid] = {'step': 'start_single'}
         else:
-            # Check if user sent replacement words directly: 'word1' 'word2' or "word1" "word2"
+            # 1. Check if user sent target chat ID directly (e.g. -100..., @channel, chatid: ...)
+            detected_chat = clean_chat_id_input(L)
+            if detected_chat and (
+                L.startswith(('-100', '@', 'https://t.me/c/', 't.me/c/')) or 
+                L.lower().startswith(('chatid', 'chat_id', 'target', 'channel')) or 
+                (L.startswith('100') and len(L) >= 10 and L.isdigit())
+            ):
+                await save_user_data(uid, 'chat_id', detected_chat)
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⚙️ सेटिंग्स देखें", callback_data="btn_settings_menu")],
+                    [InlineKeyboardButton("🗑️ चैट ID हटाएं", callback_data="py_remchatid")]
+                ])
+                await m.reply_text(
+                    "✅ **टारगेट चैट ID सफलतापूर्वक सेव हो गई!** 📢\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🎯 **सेट की गई ID:** `{detected_chat}`\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "💡 अब आपकी डाउनलोड की गई सभी फाइलें सीधे इसी चैनल/ग्रुप में भेजी जाएंगी।",
+                    reply_markup=kb
+                )
+                return
+
+            # 2. Check if user sent replacement words directly: 'word1' 'word2' or "word1" "word2" or word1 -> word2
             rep_matches = parse_replacement_rules(L)
             if rep_matches:
                 replacements = await get_user_data_key(uid, 'replacement_words', {}) or {}
@@ -727,7 +759,10 @@ async def text_handler(c, m):
                     new_clean = new_w.strip()
                     if old_clean:
                         replacements[old_clean] = new_clean
-                        added.append(f"• `{old_clean}` ➔ `{new_clean}`")
+                        if new_clean.startswith('[') and '](' in new_clean and new_clean.endswith(')'):
+                            added.append(f"• `{old_clean}` ➔ {new_clean}")
+                        else:
+                            added.append(f"• `{old_clean}` ➔ `{new_clean}`")
                 if added:
                     await save_user_data(uid, 'replacement_words', replacements)
                     msg_txt = (
@@ -739,8 +774,35 @@ async def text_handler(c, m):
                         f"📊 **कुल एक्टिव नियम:** {len(replacements)}\n"
                         "💡 अब आपकी सभी फ़ाइलों के नाम और कैप्शन में यह शब्द अपने आप बदल दिया जाएगा।"
                     )
-                    await m.reply_text(msg_txt)
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⚙️ सेटिंग्स देखें", callback_data="btn_settings_menu")],
+                        [InlineKeyboardButton("➕ और नियम जोड़ें", callback_data="py_setreplacement")]
+                    ])
+                    await m.reply_text(msg_txt, reply_markup=kb)
                     return
+
+            # 3. Check if user sent delete words directly: delete word1 word2, del: word1 word2, etc.
+            if L.lower().startswith(('delete ', 'delete:', 'del ', 'del:', 'deleteword ', 'delword ', 'remword ')):
+                del_words = parse_delete_words(L)
+                if del_words:
+                    delete_words = await get_user_data_key(uid, 'delete_words', []) or []
+                    delete_words = list(dict.fromkeys(delete_words + del_words))
+                    await save_user_data(uid, 'delete_words', delete_words)
+                    msg_txt = (
+                        "✅ **डिलीट वर्ड्स सफलतापूर्वक सेव हो गए!**\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🗑️ **हटाए जाने वाले शब्द:**\n`{', '.join(del_words)}`\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📊 **कुल एक्टिव डिलीट वर्ड्स:** {len(delete_words)}\n"
+                        "💡 अब आपकी फाइल्स और कैप्शन से ये शब्द अपने आप मिटा दिए जाएंगे।"
+                    )
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⚙️ सेटिंग्स देखें", callback_data="btn_settings_menu")],
+                        [InlineKeyboardButton("🗑️ डिलीट लिस्ट साफ़ करें", callback_data="py_remdelete")]
+                    ])
+                    await m.reply_text(msg_txt, reply_markup=kb)
+                    return
+
             return
 
     if s == 'start':

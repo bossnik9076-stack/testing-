@@ -16,7 +16,8 @@ from shared_client import client as gf, app as pyapp
 from config import OWNER_ID, LOG_GROUP
 from utils.func import (
     get_user_data_key, save_user_data, users_collection, is_premium_user,
-    send_to_log_group, parse_replacement_rules
+    send_to_log_group, parse_replacement_rules, extract_message_markdown,
+    clean_chat_id_input, parse_delete_words
 )
 from utils.custom_filters import (
     settings_in_progress, set_settings_step, get_settings_step
@@ -103,10 +104,11 @@ async def pyrogram_settings_menu(client, callback: CallbackQuery):
     except Exception:
         await callback.message.reply_text(text, reply_markup=kb)
 
-@pyapp.on_callback_query(filters.regex("^py_cancel_settings$"))
+@pyapp.on_callback_query(filters.regex("^(py_cancel_settings|btn_cancel_settings)$"))
 async def py_cancel_settings_cb(client, callback: CallbackQuery):
     user_id = callback.from_user.id
     set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
     await callback.answer("🛑 इनपुट रद्द कर दिया गया!", show_alert=False)
     await pyrogram_settings_menu(client, callback)
 
@@ -164,6 +166,26 @@ async def py_remthumb_cb(client, callback: CallbackQuery):
         await callback.answer("❌ कोई थंबनेल सेट नहीं है।", show_alert=True)
     await pyrogram_settings_menu(client, callback)
 
+@pyapp.on_callback_query(filters.regex("^(py_remdelete|btn_remdelete)$"))
+async def py_remdelete_cb(client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    await users_collection.update_one(
+        {'user_id': user_id},
+        {'$unset': {'delete_words': ''}}
+    )
+    await callback.answer("✅ सभी डिलीट वर्ड्स साफ़ कर दिए गए!", show_alert=True)
+    await pyrogram_settings_menu(client, callback)
+
+@pyapp.on_callback_query(filters.regex("^(py_remreplacement|btn_remreplacement)$"))
+async def py_remreplacement_cb(client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    await users_collection.update_one(
+        {'user_id': user_id},
+        {'$unset': {'replacement_words': ''}}
+    )
+    await callback.answer("✅ सभी वर्ड रिप्लेसमेंट साफ़ कर दिए गए!", show_alert=True)
+    await pyrogram_settings_menu(client, callback)
+
 @pyapp.on_callback_query(filters.regex("^py_reset_settings$"))
 async def py_reset_settings_cb(client, callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -203,6 +225,7 @@ async def py_settings_step_trigger(client, callback: CallbackQuery):
 
     action = callback.data.replace("py_", "")
     set_settings_step(user_id, action)
+    active_conversations[user_id] = {'type': action}
 
     cancel_kb = PKM([
         [PKB("🛑 रद्द करें (Cancel)", callback_data="py_cancel_settings")],
@@ -293,7 +316,7 @@ async def py_settings_step_trigger(client, callback: CallbackQuery):
 
     await callback.message.edit_text(prompt_text, reply_markup=cancel_kb)
 
-@pyapp.on_message(filters.private & settings_in_progress & filters.text & ~filters.command(['cancel', 'stop', 'start']))
+@pyapp.on_message(filters.private & settings_in_progress & filters.text & ~filters.command(['cancel', 'stop', 'start']), group=-1)
 async def py_settings_text_handler(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -301,11 +324,16 @@ async def py_settings_text_handler(client, message: Message):
         return
     user_id = message.from_user.id
     step = get_settings_step(user_id)
-    raw_text = extract_message_markdown(message).strip()
-    text = (message.text or "").strip()
-
     if not step:
         return
+
+    try:
+        message.stop_propagation()
+    except Exception:
+        pass
+
+    raw_text = extract_message_markdown(message).strip()
+    text = (message.text or "").strip()
 
     back_kb = PKM([
         [PKB("⚙️ वापस सेटिंग्स में जाएँ", callback_data="btn_settings_menu")],
@@ -335,6 +363,7 @@ async def py_settings_text_handler(client, message: Message):
             if added_rules:
                 await save_user_data(user_id, 'replacement_words', replacements)
                 set_settings_step(user_id, None)
+                active_conversations.pop(user_id, None)
                 res_text = (
                     "✅ **वर्ड रिप्लेसमेंट सफलतापूर्वक सेव हो गया!**\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
@@ -363,7 +392,9 @@ async def py_settings_text_handler(client, message: Message):
             "━━━━━━━━━━━━━━━━━━━━\n"
             "आपने गलत फॉर्मेट में शब्द भेजे हैं।\n\n"
             "👉 **कृपया इस सही फॉर्मेट में भेजें:**\n"
-            "`'पुराना_शब्द' 'नया_शब्द'` या `\"पुराना_शब्द\" \"नया_शब्द\"`\n\n"
+            "`'पुराना_शब्द' 'नया_शब्द'` या `\"पुराना_शब्द\" \"नया_शब्द\"`\n"
+            "या\n"
+            "`पुराना_शब्द -> नया_शब्द`\n\n"
             "💡 **उदाहरण (Examples):**\n"
             "• `'Join @OldChannel' '@MyNewChannel'`\n"
             "• `'Download Now' 'Watch Here'`\n\n"
@@ -372,12 +403,13 @@ async def py_settings_text_handler(client, message: Message):
         await message.reply_text(error_text, reply_markup=cancel_kb)
 
     elif step == "deleteword":
-        words = [w.strip("'\"," ) for w in text.split() if w.strip("'\"," )]
+        words = parse_delete_words(text)
         if words:
             delete_words = await get_user_data_key(user_id, 'delete_words', []) or []
             delete_words = list(dict.fromkeys(delete_words + words))
             await save_user_data(user_id, 'delete_words', delete_words)
             set_settings_step(user_id, None)
+            active_conversations.pop(user_id, None)
             
             res_text = (
                 "✅ **डिलीट वर्ड्स सफलतापूर्वक सेव हो गए!**\n"
@@ -401,7 +433,7 @@ async def py_settings_text_handler(client, message: Message):
             await message.reply_text(res_text, reply_markup=back_kb)
         else:
             await message.reply_text(
-                "❌ **अमान्य इनपुट!**\nकृपया हटाने के लिए कम से कम एक शब्द स्पेस देकर भेजें (जैसे: `word1 word2 @promo`).",
+                "❌ **अमान्य इनपुट!**\nकृपया हटाने के लिए कम से कम एक शब्द स्पेस या कॉमा देकर भेजें (जैसे: `word1 word2 @promo`).",
                 reply_markup=cancel_kb
             )
 
@@ -410,6 +442,7 @@ async def py_settings_text_handler(client, message: Message):
         if tag:
             await save_user_data(user_id, 'rename_tag', tag)
             set_settings_step(user_id, None)
+            active_conversations.pop(user_id, None)
             res_text = (
                 "✅ **रीनेम टैग सफलतापूर्वक सेव हो गया!**\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
@@ -437,6 +470,7 @@ async def py_settings_text_handler(client, message: Message):
         if caption:
             await save_user_data(user_id, 'caption', caption)
             set_settings_step(user_id, None)
+            active_conversations.pop(user_id, None)
             res_text = (
                 "✅ **कस्टम कैप्शन सफलतापूर्वक सेव हो गया!**\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
@@ -461,10 +495,11 @@ async def py_settings_text_handler(client, message: Message):
             await message.reply_text("❌ कृपया एक वैध कैप्शन टेक्स्ट भेजें।", reply_markup=cancel_kb)
 
     elif step == "setchatid":
-        target = text.strip()
-        if re.match(r"^(-?\d+)(/\d+)?$", target) or re.match(r"^@[a-zA-Z0-9_]{4,}$", target):
+        target = clean_chat_id_input(text)
+        if target:
             await save_user_data(user_id, 'chat_id', target)
             set_settings_step(user_id, None)
+            active_conversations.pop(user_id, None)
 
             clean_target = target.split('/')[0] if '/' in target else target
             parsed_id = int(clean_target) if (clean_target.startswith('-100') or clean_target.lstrip('-').isdigit()) else clean_target
@@ -576,18 +611,19 @@ async def py_settings_photo_handler(client, message: Message):
         logger.error(f"Thumbnail save error: {e}")
         await message.reply_text(f"❌ थंबनेल सेव करने में त्रुटि: {str(e)[:50]}")
 
-@pyapp.on_message(filters.command("settings") & filters.private)
+@pyapp.on_message(filters.command(["settings", "setting", "config"]) & filters.private)
 async def pyrogram_settings_command(client, message: Message):
     try: await message.delete()
     except Exception: pass
     if await sub(client, message) == 1: return
     user_id = message.from_user.id
     set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
     text = await get_settings_text(user_id)
     kb = get_settings_keyboard()
     await message.reply_text(text, reply_markup=kb)
 
-@pyapp.on_message(filters.command("setrename") & filters.private)
+@pyapp.on_message(filters.command(["setrename", "rename"]) & filters.private)
 async def direct_setrename_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -595,12 +631,21 @@ async def direct_setrename_cmd(client, message: Message):
     user_id = message.from_user.id
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2:
-        return await message.reply_text("👉 **उपयोग:** `/setrename [रीनेम_टैग]`\n💡 *उदाहरण:* `/setrename @AnanomusBro`")
+        set_settings_step(user_id, "setrename")
+        active_conversations[user_id] = {'type': 'setrename'}
+        return await message.reply_text(
+            "🏷️ **रीनेम टैग सेट करें (Set Rename Tag)**\n\n"
+            "👉 कृपया अपनी फाइलों के अंत में जोड़ने के लिए नया टैग भेजें:\n"
+            "💡 *उदाहरण:* `@AnanomusBro`\n\n"
+            "*(रद्द करने के लिए `/cancel` भेजें)*"
+        )
     tag = parts[1].strip()
     await save_user_data(user_id, 'rename_tag', tag)
+    set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
     await message.reply_text(f"✅ **रीनेम टैग सेट किया गया:** `{tag}`")
 
-@pyapp.on_message(filters.command("setcaption") & filters.private)
+@pyapp.on_message(filters.command(["setcaption", "caption"]) & filters.private)
 async def direct_setcaption_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -608,12 +653,20 @@ async def direct_setcaption_cmd(client, message: Message):
     user_id = message.from_user.id
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2:
-        return await message.reply_text("👉 **उपयोग:** `/setcaption [आपका_कैप्शन]`")
+        set_settings_step(user_id, "setcaption")
+        active_conversations[user_id] = {'type': 'setcaption'}
+        return await message.reply_text(
+            "📋 **कस्टम कैप्शन सेट करें (Set Custom Caption)**\n\n"
+            "👉 कृपया अपनी फाइलों के लिए नया कैप्शन भेजें।\n\n"
+            "*(रद्द करने के लिए `/cancel` भेजें)*"
+        )
     cap = parts[1].strip()
     await save_user_data(user_id, 'caption', cap)
+    set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
     await message.reply_text(f"✅ **कस्टम कैप्शन सेट किया गया!**\n\n{cap}")
 
-@pyapp.on_message(filters.command("setthumb") & filters.private)
+@pyapp.on_message(filters.command(["setthumb", "thumb"]) & filters.private)
 async def direct_setthumb_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -624,12 +677,15 @@ async def direct_setthumb_cmd(client, message: Message):
         if os.path.exists(download_path):
             os.remove(download_path)
         await client.download_media(message.reply_to_message, file_name=download_path)
+        set_settings_step(user_id, None)
+        active_conversations.pop(user_id, None)
         await message.reply_text("✅ **कस्टम थंबनेल सफलतापूर्वक सेव हुआ!**")
     else:
         set_settings_step(user_id, "setthumb")
-        await message.reply_text("🖼️ **कृपया थंबनेल के रूप में लगाने के लिए एक फोटो भेजें:**")
+        active_conversations[user_id] = {'type': 'setthumb'}
+        await message.reply_text("🖼️ **कृपया थंबनेल के रूप में लगाने के लिए एक फोटो भेजें:**\n*(या फोटो को रिप्लाई करके `/thumb` भेजें)*")
 
-@pyapp.on_message(filters.command("remthumb") & filters.private)
+@pyapp.on_message(filters.command(["remthumb", "delthumb"]) & filters.private)
 async def direct_remthumb_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -641,7 +697,7 @@ async def direct_remthumb_cmd(client, message: Message):
     else:
         await message.reply_text("❌ कोई थंबनेल सेट नहीं है।")
 
-@pyapp.on_message(filters.command("setchatid") & filters.private)
+@pyapp.on_message(filters.command(["setchatid", "chatid", "setchannel", "channel", "target", "settarget"]) & filters.private)
 async def direct_setchatid_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -649,20 +705,39 @@ async def direct_setchatid_cmd(client, message: Message):
     user_id = message.from_user.id
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2:
-        return await message.reply_text("👉 **उपयोग:** `/setchatid [-1001234567890 या @Channel]`")
-    cid = parts[1].strip()
+        set_settings_step(user_id, "setchatid")
+        active_conversations[user_id] = {'type': 'setchatid'}
+        return await message.reply_text(
+            "📢 **टारगेट चैनल/ग्रुप ID सेट करें:**\n\n"
+            "👉 कृपया अपने चैनल या ग्रुप की **Chat ID** भेजें:\n"
+            "• `-1001234567890` (चैनल / सुपरग्रुप)\n"
+            "• `-1001234567890/123` (टॉपिक / थ्रेड)\n"
+            "• `@YourChannelUsername`\n\n"
+            "💡 *उदाहरण:* `/chatid -1001234567890`\n"
+            "*(रद्द करने के लिए `/cancel` भेजें)*"
+        )
+    cid = clean_chat_id_input(parts[1])
+    if not cid:
+        return await message.reply_text("❌ **अमान्य Chat ID!** कृपया `-1001234567890` या `@ChannelUsername` भेजें।")
     await save_user_data(user_id, 'chat_id', cid)
-    await message.reply_text(f"✅ **टारगेट चैट ID सेट की गई:** `{cid}`")
+    set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
+    await message.reply_text(
+        f"✅ **टारगेट चैट ID सफलतापूर्वक सेट की गई:** `{cid}`\n\n"
+        "💡 अब आपकी डाउनलोड की गई सभी फाइलें सीधे इसी चैनल/ग्रुप में भेजी जाएँगी।"
+    )
 
-@pyapp.on_message(filters.command("remchatid") & filters.private)
+@pyapp.on_message(filters.command(["remchatid", "delchatid", "clearchatid"]) & filters.private)
 async def direct_remchatid_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
     user_id = message.from_user.id
     await users_collection.update_one({'user_id': user_id}, {'$unset': {'chat_id': ''}})
-    await message.reply_text("✅ **टारगेट चैट ID हटा दी गई!**")
+    set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
+    await message.reply_text("✅ **टारगेट चैट ID हटा दी गई! अब फाइल्स सीधे आपकी चैट में आएंगी।**")
 
-@pyapp.on_message(filters.command("deleteword") & filters.private)
+@pyapp.on_message(filters.command(["deleteword", "deletewords", "delete", "del", "delword", "remword"]) & filters.private)
 async def direct_deleteword_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -670,14 +745,40 @@ async def direct_deleteword_cmd(client, message: Message):
     user_id = message.from_user.id
     parts = message.text.strip().split(maxsplit=1)
     if len(parts) < 2:
-        return await message.reply_text("👉 **उपयोग:** `/deleteword word1 word2 word3`")
-    words = [w.strip("'\"," ) for w in parts[1].split() if w.strip("'\"," )]
+        set_settings_step(user_id, "deleteword")
+        active_conversations[user_id] = {'type': 'deleteword'}
+        return await message.reply_text(
+            "🗑️ **वर्ड रिमूवर (Delete Words):**\n\n"
+            "👉 जिन शब्दों को फाइल के नाम या कैप्शन से हटाना चाहते हैं, उन्हें भेजें:\n"
+            "💡 *उदाहरण:* `word1 word2 @promo www.site.com`\n\n"
+            "*(या सीधे कमांड: `/delete word1 word2`)*\n"
+            "*(रद्द करने के लिए `/cancel` भेजें)*"
+        )
+    words = parse_delete_words(parts[1])
+    if not words:
+        return await message.reply_text("❌ कृपया कम से कम एक शब्द दें (उदा: `/delete word1 word2`).")
     delete_words = await get_user_data_key(user_id, 'delete_words', []) or []
     delete_words = list(dict.fromkeys(delete_words + words))
     await save_user_data(user_id, 'delete_words', delete_words)
-    await message.reply_text(f"✅ **डिलीट लिस्ट में जोड़े गए:** `{', '.join(words)}`")
+    set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
+    await message.reply_text(
+        f"✅ **डिलीट लिस्ट में जोड़े गए शब्द:**\n`{', '.join(words)}`\n\n"
+        f"📊 **कुल एक्टिव डिलीट वर्ड्स:** {len(delete_words)}\n"
+        "💡 अब आपकी फाइल्स और कैप्शन से ये शब्द अपने आप हटा दिए जाएंगे।"
+    )
 
-@pyapp.on_message(filters.command("setreplacement") & filters.private)
+@pyapp.on_message(filters.command(["remdelete", "cleardelete", "clearwords"]) & filters.private)
+async def direct_remdelete_cmd(client, message: Message):
+    try: await message.delete()
+    except Exception: pass
+    user_id = message.from_user.id
+    await users_collection.update_one({'user_id': user_id}, {'$unset': {'delete_words': ''}})
+    set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
+    await message.reply_text("✅ **सभी डिलीट वर्ड्स साफ़ कर दिए गए!**")
+
+@pyapp.on_message(filters.command(["setreplacement", "setreplace", "replace", "replaceword", "replacement"]) & filters.private)
 async def direct_setreplacement_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -686,7 +787,17 @@ async def direct_setreplacement_cmd(client, message: Message):
     raw_text = extract_message_markdown(message)
     parts = raw_text.strip().split(maxsplit=1)
     if len(parts) < 2:
-        return await message.reply_text("👉 **उपयोग:** `/setreplacement 'पुराना_शब्द' 'नया_शब्द'`")
+        set_settings_step(user_id, "setreplacement")
+        active_conversations[user_id] = {'type': 'setreplacement'}
+        return await message.reply_text(
+            "🔄 **वर्ड रिप्लेसमेंट सेट करें (Word Replacement):**\n\n"
+            "👉 जिन शब्दों को बदलना चाहते हैं, उन्हें इस तरह भेजें:\n"
+            "`'पुराना_शब्द' 'नया_शब्द'` या `\"पुराना_शब्द\" \"नया_शब्द\"`\n"
+            "या\n"
+            "`पुराना_शब्द -> नया_शब्द`\n\n"
+            "💡 *उदाहरण:* `/replace 'Join @OldChannel' '@MyNewChannel'`\n"
+            "*(रद्द करने के लिए `/cancel` भेजें)*"
+        )
     matches = parse_replacement_rules(parts[1])
     if matches:
         replacements = await get_user_data_key(user_id, 'replacement_words', {}) or {}
@@ -701,11 +812,34 @@ async def direct_setreplacement_cmd(client, message: Message):
                 else:
                     added.append(f"• `{old_clean}` ➔ `{new_clean}`")
         await save_user_data(user_id, 'replacement_words', replacements)
-        await message.reply_text(f"✅ **वर्ड रिप्लेसमेंट सेव हुआ!**\n" + "\n".join(added))
+        set_settings_step(user_id, None)
+        active_conversations.pop(user_id, None)
+        await message.reply_text(
+            "✅ **वर्ड रिप्लेसमेंट सफलतापूर्वक सेव हो गया!**\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔄 **सहेजे गए नियम:**\n"
+            + "\n".join(added) + "\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 **कुल एक्टिव नियम:** {len(replacements)}"
+        )
     else:
-        await message.reply_text("❌ **अमान्य फॉर्मेट!** कृपया `'पुराना_शब्द' 'नया_शब्द'` फॉर्मेट में भेजें।")
+        await message.reply_text(
+            "❌ **अमान्य फॉर्मेट!**\n"
+            "कृपया `'पुराना_शब्द' 'नया_शब्द'` या `पुराना -> नया` फॉर्मेट में भेजें।\n"
+            "💡 उदाहरण: `/replace 'Join @OldChannel' '@MyNewChannel'`"
+        )
 
-@pyapp.on_message(filters.command("reset") & filters.private)
+@pyapp.on_message(filters.command(["remreplacement", "clearreplacement", "clearreplace"]) & filters.private)
+async def direct_remreplacement_cmd(client, message: Message):
+    try: await message.delete()
+    except Exception: pass
+    user_id = message.from_user.id
+    await users_collection.update_one({'user_id': user_id}, {'$unset': {'replacement_words': ''}})
+    set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
+    await message.reply_text("✅ **सभी वर्ड रिप्लेसमेंट साफ़ कर दिए गए!**")
+
+@pyapp.on_message(filters.command(["reset", "resetall"]) & filters.private)
 async def direct_reset_cmd(client, message: Message):
     try: await message.delete()
     except Exception: pass
@@ -718,6 +852,7 @@ async def direct_reset_cmd(client, message: Message):
         if os.path.exists(p):
             os.remove(p)
     set_settings_step(user_id, None)
+    active_conversations.pop(user_id, None)
     await message.reply_text("✅ **आपकी सभी सेटिंग्स पूरी तरह रीसेट कर दी गई हैं!**")
 
 if gf:
@@ -808,10 +943,12 @@ if gf:
         conv_type = active_conversations[user_id]['type']
         
         if conv_type == 'setchatid':
-            if re.match(r"^(-?\d+)(/\d+)?$", text) or re.match(r"^@[a-zA-Z0-9_]{4,}$", text):
-                await save_user_data(user_id, 'chat_id', text)
-                await event.respond(f'✅ **टारगेट चैट ID सेट:** `{text}`')
+            cid = clean_chat_id_input(text)
+            if cid:
+                await save_user_data(user_id, 'chat_id', cid)
+                await event.respond(f'✅ **टारगेट चैट ID सेट:** `{cid}`')
                 del active_conversations[user_id]
+                set_settings_step(user_id, None)
             else:
                 await event.respond("❌ **अमान्य Chat ID!** कृपया `-1001234567890` या `@ChannelUsername` भेजें।")
 
@@ -819,11 +956,13 @@ if gf:
             await save_user_data(user_id, 'rename_tag', text)
             await event.respond(f'✅ रीनेम टैग सेट: `{text}`')
             del active_conversations[user_id]
+            set_settings_step(user_id, None)
             
         elif conv_type == 'setcaption':
             await save_user_data(user_id, 'caption', text)
             await event.respond('✅ कस्टम कैप्शन सेट!')
             del active_conversations[user_id]
+            set_settings_step(user_id, None)
             
         elif conv_type == 'setthumb' and event.photo:
             temp_path = await event.download_media()
@@ -833,17 +972,19 @@ if gf:
             os.rename(temp_path, thumb_path)
             await event.respond('✅ कस्टम थंबनेल सेव हुआ!')
             del active_conversations[user_id]
+            set_settings_step(user_id, None)
             
         elif conv_type == 'deleteword':
-            words = [w.strip("'\"," ) for w in text.split() if w.strip("'\"," )]
+            words = parse_delete_words(text)
             if words:
                 delete_words = await get_user_data_key(user_id, 'delete_words', []) or []
                 delete_words = list(dict.fromkeys(delete_words + words))
                 await save_user_data(user_id, 'delete_words', delete_words)
                 await event.respond(f"✅ डिलीट लिस्ट में जोड़े गए: `{', '.join(words)}`")
                 del active_conversations[user_id]
+                set_settings_step(user_id, None)
             else:
-                await event.respond("❌ कृपया कम से कम एक शब्द स्पेस देकर भेजें।")
+                await event.respond("❌ कृपया कम से कम एक शब्द स्पेस या कॉमा देकर भेजें।")
                 
         elif conv_type == 'setreplacement':
             raw_text = ""
@@ -871,8 +1012,9 @@ if gf:
                 await save_user_data(user_id, 'replacement_words', replacements)
                 await event.respond(f"✅ वर्ड रिप्लेसमेंट सेव हुआ!\n" + "\n".join(added))
                 del active_conversations[user_id]
+                set_settings_step(user_id, None)
             else:
-                await event.respond("❌ **अमान्य फॉर्मेट!** कृपया `'पुराना_शब्द' 'नया_शब्द'` फॉर्मेट में भेजें।")
+                await event.respond("❌ **अमान्य फॉर्मेट!** कृपया `'पुराना_शब्द' 'नया_शब्द'` या `पुराना -> नया` फॉर्मेट में भेजें।")
 
 async def rename_file(file, sender, edit=None):
     try:

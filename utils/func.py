@@ -334,6 +334,86 @@ def strip_markdown_link(text: str) -> str:
     cleaned = re.sub(r'<a\s+[^>]*href=["\'][^"\']*["\'][^>]*>(.*?)</a>', r'\1', cleaned, flags=re.IGNORECASE)
     return cleaned.strip('\'"` ')
 
+def extract_message_markdown(message) -> str:
+    """
+    Extracts text or caption from Pyrogram message preserving markdown syntax and hyperlinks.
+    """
+    if not message:
+        return ""
+    text_obj = getattr(message, 'caption', None) or getattr(message, 'text', None) or ""
+    entities = getattr(message, 'caption_entities', None) or getattr(message, 'entities', None)
+    if text_obj and entities:
+        try:
+            from pyrogram.parser import Parser
+            return Parser.unparse(str(text_obj), entities, is_html=False)
+        except Exception:
+            pass
+    if hasattr(text_obj, 'markdown') and text_obj.markdown:
+        return str(text_obj.markdown)
+    return str(text_obj or "")
+
+def clean_chat_id_input(text: str) -> str | None:
+    """
+    Cleans and standardizes user-provided target chat/channel ID:
+    - -1001234567890
+    - -1001234567890/123 (with topic)
+    - 1001234567890 -> -1001234567890
+    - @username
+    - https://t.me/username -> @username
+    - https://t.me/c/1234567890/123 -> -1001234567890/123
+    - chatid: -100...
+    """
+    if not text:
+        return None
+    raw = str(text).strip()
+    raw = re.sub(r'^(?:/(?:setchatid|chatid|setchannel|channel|target|settarget)|chatid|chat_id|chat\s*id|target|channel)\s*[:=]?\s*', '', raw, flags=re.IGNORECASE).strip()
+
+    c_match = re.search(r't\.me/c/(\d+)(?:/(\d+))?(?:/(\d+))?', raw)
+    if c_match:
+        cid = f"-100{c_match.group(1)}"
+        if c_match.group(3):
+            # t.me/c/1234567890/10/55 -> group(2) is topic, group(3) is message
+            return f"{cid}/{c_match.group(2)}"
+        return cid
+
+    tme_match = re.search(r't\.me/([a-zA-Z0-9_]{4,})', raw)
+    if tme_match and tme_match.group(1).lower() not in ['c', 'joinchat', 'addstickers', 's']:
+        return f"@{tme_match.group(1)}"
+
+    if re.match(r"^@[a-zA-Z0-9_]{4,}$", raw):
+        return raw
+
+    if re.match(r"^(-?\d+)(/\d+)?$", raw):
+        if raw.startswith("100") and len(raw) >= 10:
+            return f"-{raw}"
+        return raw
+
+    if re.match(r"^(\d{9,12})(/\d+)?$", raw):
+        parts = raw.split('/', 1)
+        base = f"-100{parts[0]}"
+        return f"{base}/{parts[1]}" if len(parts) > 1 else base
+
+    return None
+
+def parse_delete_words(text: str) -> list[str]:
+    """
+    Parses delete word candidates from user input:
+    - Strips prefixes like /deleteword, /delete, /del, delete:, del:
+    - Splits by commas, newlines, or whitespace
+    - Handles single or double quotes
+    """
+    if not text:
+        return []
+    raw = str(text).strip()
+    raw = re.sub(r'^(?:/(?:deleteword|deletewords|delete|delword|del|remword)|delete:|del:)\s*', '', raw, flags=re.IGNORECASE).strip()
+    raw = re.sub(r'[,;\n]+', ' ', raw)
+    words = []
+    for w in raw.split():
+        clean = w.strip("'\"," )
+        if clean and clean.lower() not in ['delete', 'del', 'deleteword', 'deletewords']:
+            words.append(clean)
+    return list(dict.fromkeys(words))
+
 def parse_replacement_rules(text: str) -> list[tuple[str, str]]:
     """
     Parses word replacement pairs from user input supporting:
@@ -344,6 +424,7 @@ def parse_replacement_rules(text: str) -> list[tuple[str, str]]:
     - Smart/curly quotes: ‘old’ ‘new’, “old” “new”, `old` `new`
     - Separator/arrow styles: old -> new, old ➔ new, old => new, old = new
     - Plain 2-word format: old new
+    - Supports leading commands like /replace, /setreplacement, replace:
     """
     if not text:
         return []
@@ -364,7 +445,12 @@ def parse_replacement_rules(text: str) -> list[tuple[str, str]]:
     rules = []
     for line in normalized.splitlines():
         line = line.strip()
-        if not line or line.startswith('/'):
+        if not line:
+            continue
+
+        # Strip command prefixes like /setreplacement, /replace, replace:, replace
+        line = re.sub(r'^(?:/(?:setreplacement|setreplace|replace|replaceword)|replace:|replace\s+)\s*', '', line, flags=re.IGNORECASE).strip()
+        if not line:
             continue
 
         # Check delimiter-based format (->, ➔, =>, =) first
