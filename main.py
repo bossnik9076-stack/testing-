@@ -83,7 +83,7 @@ async def main():
         web_app.router.add_get('/health', lambda r: web.Response(text="OK"))
         runner = web.AppRunner(web_app)
         await runner.setup()
-        port = int(os.environ.get("PORT", 8080))
+        port = int(os.environ.get("PORT", 3000))
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
         logger.info(f"Web dashboard started on port {port}.")

@@ -227,6 +227,11 @@ async def verify_sub_callback(client: Client, callback: CallbackQuery):
 async def btn_single_cb(client: Client, callback: CallbackQuery):
     if await subscribe(client, callback) == 1: return
     user_id = callback.from_user.id
+    from plugins.batch import get_uclient
+    uc = await get_uclient(user_id)
+    if not uc:
+        await callback.answer("⚠️ Login Required! Please login first.", show_alert=True)
+        return
     from plugins.batch import Z
     Z[user_id] = {'step': 'start_single'}
     
@@ -501,6 +506,13 @@ async def single_cmd(client: Client, message: Message):
     except Exception: pass
     if await subscribe(client, message) == 1: return
     user_id = message.from_user.id
+    from plugins.batch import get_uclient
+    uc = await get_uclient(user_id)
+    if not uc:
+        await message.reply_text('⚠️ **Login Required**
+
+You must login using /login to extract links.')
+        return
     from plugins.batch import Z
     Z[user_id] = {'step': 'start_single'}
     

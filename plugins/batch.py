@@ -6,6 +6,7 @@ import os, re, time, asyncio, json, asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import UserNotParticipant
+from pyrogram.enums import ParseMode
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
 from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata
 from utils.func import get_user_data_key, process_text_with_rules, is_premium_user, E
@@ -267,7 +268,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
             try:
                 # 1. Try bot copy_message
                 try:
-                    sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, reply_to_message_id=rtmid)
+                    sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                     if sent:
                         return 'Forwarded directly.'
                 except Exception:
@@ -284,7 +285,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 # 3. Try userbot copy_message
                 if u and u != c:
                     try:
-                        sent = await u.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, reply_to_message_id=rtmid)
+                        sent = await u.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                         if sent:
                             return 'Forwarded directly.'
                     except Exception:
@@ -366,13 +367,14 @@ async def process_msg(c, u, m, d, lt, uid, i):
                                     height=h if mtype == 'video' else None,
                                     width=w if mtype == 'video' else None,
                                     caption=ft if m.caption and mtype not in ['video_note', 'voice'] else None, 
-                                    reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st))
+                                    parse_mode=ParseMode.MARKDOWN,
+                                    progress=prog, progress_args=(c, d, p.id, st))
                     break
             else:
-                sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None,
-                                            reply_to_message_id=rtmid, progress=prog, progress_args=(c, d, p.id, st))
+                sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None, parse_mode=ParseMode.MARKDOWN,
+                                            progress=prog, progress_args=(c, d, p.id, st))
             
-            await c.copy_message(d, LOG_GROUP, sent.id)
+            await c.copy_message(d, LOG_GROUP, sent.id, reply_to_message_id=rtmid)
             if sent:
                 try:
                     usr = await c.get_users(uid)
@@ -398,7 +400,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 mtd = await get_video_metadata(f)
                 dur, h, w = mtd['duration'], mtd['width'], mtd['height']
                 th = await screenshot(f, dur, d)
-                sent = await c.send_video(tcid, video=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_video(tcid, video=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
                                 thumb=th, width=w, height=h, duration=dur, 
                                 progress=prog, progress_args=(c, d, p.id, st), 
                                 reply_to_message_id=rtmid)
@@ -411,19 +413,19 @@ async def process_msg(c, u, m, d, lt, uid, i):
             elif m.sticker:
                 sent = await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
             elif m.audio or (m.document and file_ext in audio_extensions):
-                sent = await c.send_audio(tcid, audio=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_audio(tcid, audio=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
                                 thumb=th, progress=prog, progress_args=(c, d, p.id, st), 
                                 reply_to_message_id=rtmid)
             elif m.photo:
-                sent = await c.send_photo(tcid, photo=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_photo(tcid, photo=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
                                 progress=prog, progress_args=(c, d, p.id, st), 
                                 reply_to_message_id=rtmid)
             elif m.document:
-                sent = await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
                                     progress=prog, progress_args=(c, d, p.id, st), 
                                     reply_to_message_id=rtmid)
             else:
-                sent = await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), 
+                sent = await c.send_document(tcid, document=f, caption=ft if ft else (m.caption.markdown if m.caption else None), parse_mode=ParseMode.MARKDOWN, 
                                     progress=prog, progress_args=(c, d, p.id, st), 
                                     reply_to_message_id=rtmid)
         except asyncio.CancelledError:
@@ -473,6 +475,13 @@ async def process_cmd(c, m):
     
     if await sub(c, m) == 1: return
     
+    uc = await get_uclient(uid)
+    if not uc:
+        await m.reply_text('⚠️ **Login Required**
+
+You must login using /login to extract links. The bot\'s internal session is disabled for downloading.')
+        return
+        
     if is_user_active(uid):
         await m.reply_text('⚠️ You have an active task. Use /stop to cancel it.')
         return
@@ -597,41 +606,58 @@ async def text_handler(c, m):
         })
         
         try:
-            for j in range(n):
+            j = 0
+            attempts = 0
+            max_attempts = n * 10  # Prevent infinite loop if all are empty/text
+            
+            while success < n and attempts < max_attempts:
                 if should_cancel(uid):
-                    await pt.edit(f'🛑 Batch cancelled at {j}/{n}. Success: {success}')
+                    await pt.edit(f'🛑 Batch cancelled. Success: {success}/{n}')
                     break
                 
-                await update_batch_progress(uid, j, success)
+                await update_batch_progress(uid, success, success)
                 mid = int(s) + j
+                j += 1
+                attempts += 1
                 
                 try:
                     msg = await get_msg(c, uc, i, mid, lt)
                     if msg:
+                        has_media = getattr(msg, "media", None) is not None
+                        if not has_media:
+                            try:
+                                await pt.edit(f'📦 Batch Progress: {success}/{n} (Msg {mid} text/empty skipped) | ✅ Success: {success}')
+                            except Exception:
+                                pass
+                            continue
+                            
                         res = await process_msg(c, uc, msg, str(m.chat.id), lt, uid, i)
                         if 'Done' in res or 'Copied' in res or 'Sent' in res or 'Forwarded' in res:
                             success += 1
                         try:
-                            await pt.edit(f'📦 Batch Progress: {j+1}/{n} | ✅ Success: {success}')
+                            await pt.edit(f'📦 Batch Progress: {success}/{n} | ✅ Success: {success}')
                         except Exception:
                             pass
                     else:
                         try:
-                            await pt.edit(f'📦 Batch Progress: {j+1}/{n} (Msg {mid} empty/skipped) | ✅ Success: {success}')
+                            await pt.edit(f'📦 Batch Progress: {success}/{n} (Msg {mid} not found) | ✅ Success: {success}')
                         except Exception:
                             pass
                 except asyncio.CancelledError:
-                    await pt.edit(f'🛑 Batch cancelled at {j}/{n}. Success: {success}')
+                    await pt.edit(f'🛑 Batch cancelled. Success: {success}/{n}')
                     break
                 except Exception as e:
                     try:
-                        await pt.edit(f'📦 Batch Progress: {j+1}/{n}: Error - {str(e)[:40]}')
+                        await pt.edit(f'📦 Batch Progress: {success}/{n}: Error - {str(e)[:40]}')
                     except Exception:
                         pass
                 
                 await asyncio.sleep(2)
             
-            await m.reply_text(f'🎉 **Batch Completed!**\n\n✅ Successfully saved: {success}/{n}')
+            if attempts >= max_attempts and success < n:
+                await m.reply_text(f'⚠️ **Batch Stopped!**\n\nReached maximum scan attempts. Successfully saved: {success}/{n}')
+            else:
+                await m.reply_text(f'🎉 **Batch Completed!**\n\n✅ Successfully saved: {success}/{n}')
         finally:
             await remove_active_batch(uid)
             Z.pop(uid, None)
