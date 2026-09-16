@@ -28,7 +28,14 @@ def settings_filter_func(_, __, message):
     if not message.from_user:
         return False
     user_id = message.from_user.id
-    return user_id in settings_steps
+    if user_id not in settings_steps:
+        return False
+    text = (message.text or "").strip()
+    # If user sends a telegram link or a slash command, clear settings step and do not intercept
+    if "t.me/" in text or "telegram.me/" in text or text.startswith("/"):
+        settings_steps.pop(user_id, None)
+        return False
+    return True
 
 settings_in_progress = filters.create(settings_filter_func)
 

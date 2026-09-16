@@ -705,6 +705,11 @@ async def process_cmd(c, m):
     cmd = m.command[0]
     
     if await sub(c, m) == 1: return
+
+    can_extract, reason = await can_user_extract(uid)
+    if not can_extract:
+        await m.reply_text(reason)
+        return
     
     user_data = await get_user_data(uid)
     has_session = bool(user_data and user_data.get("session_string"))
@@ -754,85 +759,13 @@ async def text_handler(c, m):
         L = (m.text or "").strip()
         i, d, lt = E(L)
         if i and d:
+            can_extract, reason = await can_user_extract(uid)
+            if not can_extract:
+                await m.reply_text(reason)
+                return
             s = 'start_single'
             Z[uid] = {'step': 'start_single'}
         else:
-            # 1. Check if user sent target chat ID directly (e.g. -100..., @channel, chatid: ...)
-            detected_chat = clean_chat_id_input(L)
-            if detected_chat and (
-                L.startswith(('-100', '@', 'https://t.me/c/', 't.me/c/')) or 
-                L.lower().startswith(('chatid', 'chat_id', 'target', 'channel')) or 
-                (L.startswith('100') and len(L) >= 10 and L.isdigit())
-            ):
-                await save_user_data(uid, 'chat_id', detected_chat)
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⚙️ सेटिंग्स देखें", callback_data="btn_settings_menu")],
-                    [InlineKeyboardButton("🗑️ चैट ID हटाएं", callback_data="py_remchatid")]
-                ])
-                await m.reply_text(
-                    "✅ **टारगेट चैट ID सफलतापूर्वक सेव हो गई!** 📢\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🎯 **सेट की गई ID:** `{detected_chat}`\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    "💡 अब आपकी डाउनलोड की गई सभी फाइलें सीधे इसी चैनल/ग्रुप में भेजी जाएंगी।",
-                    reply_markup=kb
-                )
-                return
-
-            # 2. Check if user sent replacement words directly: 'word1' 'word2' or "word1" "word2" or word1 -> word2
-            rep_matches = parse_replacement_rules(L)
-            if rep_matches:
-                replacements = await get_user_data_key(uid, 'replacement_words', {}) or {}
-                added = []
-                for old_w, new_w in rep_matches:
-                    old_clean = old_w.strip()
-                    new_clean = new_w.strip()
-                    if old_clean:
-                        replacements[old_clean] = new_clean
-                        if new_clean.startswith('[') and '](' in new_clean and new_clean.endswith(')'):
-                            added.append(f"• `{old_clean}` ➔ {new_clean}")
-                        else:
-                            added.append(f"• `{old_clean}` ➔ `{new_clean}`")
-                if added:
-                    await save_user_data(uid, 'replacement_words', replacements)
-                    msg_txt = (
-                        "✅ **वर्ड रिप्लेसमेंट सफलतापूर्वक सेव हो गया!**\n"
-                        "━━━━━━━━━━━━━━━━━━━━\n"
-                        "🔄 **सहेजे गए नियम:**\n"
-                        + "\n".join(added) + "\n"
-                        "━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📊 **कुल एक्टिव नियम:** {len(replacements)}\n"
-                        "💡 अब आपकी सभी फ़ाइलों के नाम और कैप्शन में यह शब्द अपने आप बदल दिया जाएगा।"
-                    )
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("⚙️ सेटिंग्स देखें", callback_data="btn_settings_menu")],
-                        [InlineKeyboardButton("➕ और नियम जोड़ें", callback_data="py_setreplacement")]
-                    ])
-                    await m.reply_text(msg_txt, reply_markup=kb)
-                    return
-
-            # 3. Check if user sent delete words directly: delete word1 word2, del: word1 word2, etc.
-            if L.lower().startswith(('delete ', 'delete:', 'del ', 'del:', 'deleteword ', 'delword ', 'remword ')):
-                del_words = parse_delete_words(L)
-                if del_words:
-                    delete_words = await get_user_data_key(uid, 'delete_words', []) or []
-                    delete_words = list(dict.fromkeys(delete_words + del_words))
-                    await save_user_data(uid, 'delete_words', delete_words)
-                    msg_txt = (
-                        "✅ **डिलीट वर्ड्स सफलतापूर्वक सेव हो गए!**\n"
-                        "━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🗑️ **हटाए जाने वाले शब्द:**\n`{', '.join(del_words)}`\n"
-                        "━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📊 **कुल एक्टिव डिलीट वर्ड्स:** {len(delete_words)}\n"
-                        "💡 अब आपकी फाइल्स और कैप्शन से ये शब्द अपने आप मिटा दिए जाएंगे।"
-                    )
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("⚙️ सेटिंग्स देखें", callback_data="btn_settings_menu")],
-                        [InlineKeyboardButton("🗑️ डिलीट लिस्ट साफ़ करें", callback_data="py_remdelete")]
-                    ])
-                    await m.reply_text(msg_txt, reply_markup=kb)
-                    return
-
             return
 
     if s == 'start':
@@ -995,6 +928,15 @@ async def text_handler(c, m):
                         if res and any(x in res for x in ['Done', 'Copied', 'Sent', 'Forwarded']):
                             success += 1
                             await record_user_extraction(uid)
+                            if not is_prem and success >= 1:
+                                await m.reply_text(
+                                    "⚠️ **फ्री ट्रायल लिमिट समाप्त (Daily Limit Reached)** ⚠️\n"
+                                    "━━━━━━━━━━━━━━━━━━━━\n"
+                                    "आपकी 1 मुफ़्त फ़ाइल सफलतापूर्वक निकाल ली गई है!\n"
+                                    "💎 **24*7 असीमित (Unlimited) फ़ाइल्स निकालने के लिए प्रीमियम लें!**\n\n"
+                                    "👉 प्लान्स देखने के लिए: **/plan**"
+                                )
+                                break
                 except asyncio.CancelledError:
                     await pt.edit(f'🛑 Batch cancelled. Success: {success}/{n}')
                     break

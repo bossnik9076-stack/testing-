@@ -832,7 +832,15 @@ async def add_premium_user(user_id: int, duration_value: int, duration_unit: str
 
 async def is_premium_user(user_id: int) -> bool:
     try:
-        user = await premium_users_collection.find_one({"user_id": user_id})
+        from config import OWNER_ID
+        uid = int(user_id)
+        if isinstance(OWNER_ID, list):
+            if uid in OWNER_ID or str(uid) in [str(x) for x in OWNER_ID]:
+                return True
+        elif str(uid) == str(OWNER_ID):
+            return True
+
+        user = await premium_users_collection.find_one({"$or": [{"user_id": uid}, {"user_id": str(uid)}]})
         if user and "subscription_end" in user:
             now = datetime.now()
             return now < user["subscription_end"]
@@ -843,7 +851,8 @@ async def is_premium_user(user_id: int) -> bool:
 
 async def get_premium_details(user_id: int):
     try:
-        user = await premium_users_collection.find_one({"user_id": user_id})
+        uid = int(user_id)
+        user = await premium_users_collection.find_one({"$or": [{"user_id": uid}, {"user_id": str(uid)}]})
         if user and "subscription_end" in user:
             return user
         return None
@@ -891,32 +900,57 @@ async def send_to_log_group(text: str, reply_to_message_id: int = None, file=Non
 async def can_user_extract(user_id: int) -> tuple[bool, str]:
     """
     Check if user can extract a file.
-    Premium users can extract unlimited files 24*7.
-    Free users can only extract 1 file per day.
+    Premium users (Basic or Pro) or Owner can extract unlimited files 24*7.
+    Free users can only extract 1 file per 24 hours (public or private).
+    Trial is not consumed until they actually extract a file.
     """
     try:
         from config import OWNER_ID
+        uid = int(user_id)
         if isinstance(OWNER_ID, list):
-            if user_id in OWNER_ID or str(user_id) in [str(x) for x in OWNER_ID]:
+            if uid in OWNER_ID or str(uid) in [str(x) for x in OWNER_ID]:
                 return True, "owner"
-        elif str(user_id) == str(OWNER_ID):
+        elif str(uid) == str(OWNER_ID):
             return True, "owner"
 
-        if await is_premium_user(user_id):
+        if await is_premium_user(uid):
             return True, "premium"
 
-        # Check free user daily extraction count
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        user_data = await users_collection.find_one({"user_id": int(user_id)})
-        last_date = user_data.get("free_extract_date") if user_data else None
-        count = user_data.get("free_extract_count", 0) if user_data else 0
+        user_data = await users_collection.find_one({"$or": [{"user_id": uid}, {"user_id": str(uid)}]})
+        last_time = None
+        if user_data:
+            last_time = user_data.get("last_free_extract_time")
+            # fallback to legacy date string if present
+            if not last_time and user_data.get("free_extract_date"):
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                if user_data.get("free_extract_date") == today_str and user_data.get("free_extract_count", 0) >= 1:
+                    last_time = datetime.now()
 
-        if last_date != today_str:
-            return True, "free"
-        
-        if count >= 1:
-            return False, "free_limit_reached"
-            
+        if last_time:
+            now = datetime.now()
+            if isinstance(last_time, str):
+                try:
+                    last_time = datetime.fromisoformat(last_time)
+                except Exception:
+                    last_time = now
+            diff = now - last_time
+            if diff.total_seconds() < 24 * 3600:
+                remaining_sec = int(24 * 3600 - diff.total_seconds())
+                hours = remaining_sec // 3600
+                minutes = (remaining_sec % 3600) // 60
+                time_left_str = f"{hours} घंटे {minutes} मिनट" if hours > 0 else f"{minutes} मिनट"
+                msg = (
+                    "⚠️ **प्रीमियम आवश्यक (Daily Free Limit Reached)** ⚠️\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "आप एक **फ़्री यूज़र** हैं। आप 24 घंटे में केवल **1 मुफ़्त फ़ाइल** (पब्लिक या प्राइवेट) निकाल सकते हैं।\n\n"
+                    f"⏳ **अगली फ़्री फ़ाइल:** `{time_left_str}` बाद निकाल सकेंगे।\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "💎 **24*7 असीमित (Unlimited) फ़ाइल्स निकालने के लिए:**\n"
+                    "• बेसिक या प्रो प्रीमियम प्लान लें और बिना किसी लिमिट के कभी भी अनगिनत फ़ाइलें निकालें!\n\n"
+                    "👉 **प्लान्स व अपग्रेड के लिए:** `/plan`"
+                )
+                return False, msg
+
         return True, "free"
     except Exception as e:
         logger.error(f"Error checking user extract limit: {e}")
@@ -924,33 +958,32 @@ async def can_user_extract(user_id: int) -> tuple[bool, str]:
 
 async def record_user_extraction(user_id: int):
     """
-    Record an extraction. If free user, increment count and update date.
+    Record an extraction.
+    Only when a file is actually extracted successfully does this consume the free extraction.
     """
     try:
-        if await is_premium_user(user_id):
+        uid = int(user_id)
+        if await is_premium_user(uid):
             await users_collection.update_one(
-                {"user_id": int(user_id)},
+                {"$or": [{"user_id": uid}, {"user_id": str(uid)}]},
                 {"$inc": {"used_files": 1}},
                 upsert=True
             )
             return
 
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        user_data = await users_collection.find_one({"user_id": int(user_id)})
-        last_date = user_data.get("free_extract_date") if user_data else None
-        
-        if last_date != today_str:
-            await users_collection.update_one(
-                {"user_id": int(user_id)},
-                {"$set": {"free_extract_date": today_str, "free_extract_count": 1}, "$inc": {"used_files": 1}},
-                upsert=True
-            )
-        else:
-            await users_collection.update_one(
-                {"user_id": int(user_id)},
-                {"$inc": {"free_extract_count": 1, "used_files": 1}},
-                upsert=True
-            )
+        now = datetime.now()
+        await users_collection.update_one(
+            {"$or": [{"user_id": uid}, {"user_id": str(uid)}]},
+            {
+                "$set": {
+                    "last_free_extract_time": now,
+                    "free_extract_date": now.strftime("%Y-%m-%d"),
+                    "free_extract_count": 1
+                },
+                "$inc": {"used_files": 1}
+            },
+            upsert=True
+        )
     except Exception as e:
         logger.error(f"Error recording user extraction: {e}")
 

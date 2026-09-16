@@ -318,11 +318,19 @@ async def py_settings_step_trigger(client, callback: CallbackQuery):
 
 @pyapp.on_message(filters.private & settings_in_progress & filters.text & ~filters.command(['cancel', 'stop', 'start']), group=-1)
 async def py_settings_text_handler(client, message: Message):
+    text = (message.text or "").strip()
+    user_id = message.from_user.id
+    
+    # If user sent a link to download or a command, do not treat as settings input
+    if "t.me/" in text or "telegram.me/" in text or text.startswith("/"):
+        set_settings_step(user_id, None)
+        active_conversations.pop(user_id, None)
+        return
+
     try: await message.delete()
     except Exception: pass
     if await sub(client, message) == 1:
         return
-    user_id = message.from_user.id
     step = get_settings_step(user_id)
     if not step:
         return
@@ -936,6 +944,12 @@ if gf:
         user_id = event.sender_id
         text = (event.text or "").strip()
         if user_id not in active_conversations or text.startswith('/'):
+            return
+        
+        # If user sent a link to download, do not process as settings
+        if "t.me/" in text or "telegram.me/" in text:
+            active_conversations.pop(user_id, None)
+            set_settings_step(user_id, None)
             return
             
         conv_type = active_conversations[user_id]['type']

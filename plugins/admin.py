@@ -50,28 +50,23 @@ async def btn_owner_panel_cb(client, callback: CallbackQuery):
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📋 सभी लॉगिन लिस्ट", callback_data="btn_admin_alllogins"),
-            InlineKeyboardButton("📊 सर्वर स्टेट्स", callback_data="btn_speedtest")
+            InlineKeyboardButton("🚪 सभी लॉगआउट करें", callback_data="btn_admin_alllogout")
         ],
-        [InlineKeyboardButton("🔙 मुख्य मेनू", callback_data="btn_main_menu")]
+        [
+            InlineKeyboardButton("📊 सर्वर स्टेट्स", callback_data="btn_speedtest"),
+            InlineKeyboardButton("🔙 मुख्य मेनू", callback_data="btn_main_menu")
+        ]
     ])
     await callback.message.edit_text(text, reply_markup=kb)
 
-@app.on_message(filters.command(["logout_all"]) & filters.private)
-async def logout_all_cmd(client: Client, message: Message):
-    user_id = message.from_user.id
-    try: await message.delete()
-    except Exception: pass
-
-    if not check_is_owner(user_id):
-        return await message.reply_text("❌ **यह कमांड केवल ओनर (Admin) के लिए है!**")
-
+async def perform_all_logout(client: Client, message: Message):
     status_msg = await message.reply_text("🔄 **डेटाबेस से सभी सेशन्स को डिलीट किया जा रहा है...**")
     
     try:
         from plugins.batch import UC
         for uid in list(UC.keys()):
             try: await UC[uid].stop()
-            except: pass
+            except Exception: pass
             del UC[uid]
             
         result = await users_collection.update_many(
@@ -80,20 +75,55 @@ async def logout_all_cmd(client: Client, message: Message):
                 "session_string": "",
                 "two_factor": "",
                 "phone": "",
-                "login_type": ""
+                "first_name": "",
+                "last_name": "",
+                "username": "",
+                "account_id": "",
+                "login_type": "",
+                "cached_peers": ""
             }}
         )
         
-        await status_msg.edit(f"✅ **सभी सेशन्स सफलतापूर्वक लॉगआउट कर दिए गए हैं!**\n\n🔄 प्रभावित खाते: `{result.modified_count}`")
+        import glob
+        for f in glob.glob("*.session*"):
+            try:
+                if not f.startswith("bot") and "shared" not in f:
+                    os.remove(f)
+            except Exception: pass
+
+        await status_msg.edit(
+            f"✅ **सभी सेशन्स सफलतापूर्वक लॉगआउट कर दिए गए हैं!**\n\n"
+            f"👥 **कुल लॉगआउट किए गए सेशन्स:** `{result.modified_count}`\n"
+            f"💡 अब जो भी यूज़र बॉट का उपयोग करेगा, उसे दोबारा **/login** करने के लिए कहा जाएगा।"
+        )
         if LOG_GROUP:
             try:
                 await client.send_message(
                     chat_id=LOG_GROUP,
-                    text=f"👑 **Admin /logout_all Triggered**\n👥 Total Sessions Cleared: `{result.modified_count}`"
+                    text=f"👑 **Admin All Logout Executed**\n👥 Total Sessions Cleared: `{result.modified_count}`"
                 )
             except Exception: pass
     except Exception as e:
         await status_msg.edit(f"❌ त्रुटि: `{str(e)}`")
+
+@app.on_callback_query(filters.regex("^btn_admin_alllogout$"))
+async def cb_admin_alllogout(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if not check_is_owner(user_id):
+        return await callback.answer("❌ यह केवल ओनर (Admin) के लिए है!", show_alert=True)
+    await callback.answer("🔄 सभी सेशन्स लॉगआउट किए जा रहे हैं...")
+    await perform_all_logout(client, callback.message)
+
+@app.on_message(filters.command(["logout_all", "alllogout", "logoutall", "all_logout"]) & filters.private)
+async def logout_all_cmd(client: Client, message: Message):
+    user_id = message.from_user.id
+    try: await message.delete()
+    except Exception: pass
+
+    if not check_is_owner(user_id):
+        return await message.reply_text("❌ **यह कमांड केवल ओनर (Admin) के लिए है!**")
+
+    await perform_all_logout(client, message)
 
 @app.on_message(filters.command(["allloginlist", "alllogins"]) & filters.private)
 async def all_login_list_cmd(client: Client, message: Message):
