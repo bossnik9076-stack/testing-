@@ -320,6 +320,11 @@ async def get_uclient(uid):
                 pass
             asyncio.create_task(upd_dlg(gg))
             UC[uid_int] = gg
+            try:
+                from plugins.auto_forward import sync_live_listeners_for_client
+                asyncio.create_task(sync_live_listeners_for_client(gg, uid_int))
+            except Exception:
+                pass
             return gg
         except Exception as e:
             err_str = str(e)

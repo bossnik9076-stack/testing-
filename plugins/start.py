@@ -118,22 +118,23 @@ def get_main_menu_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📦 Batch Extract", callback_data="btn_batch")
         ],
         [
-            InlineKeyboardButton("🔑 Login / Session", callback_data="btn_login_menu"),
-            InlineKeyboardButton("⚙️ Custom Settings", callback_data="btn_settings_menu")
+            InlineKeyboardButton("🔄 Auto Forward", callback_data="btn_auto_forward"),
+            InlineKeyboardButton("🔑 Login / Session", callback_data="btn_login_menu")
         ],
         [
-            InlineKeyboardButton("📊 My Limits & Plan", callback_data="btn_mylimit"),
-            InlineKeyboardButton("💎 VIP Plans", callback_data="see_plan")
+            InlineKeyboardButton("⚙️ Custom Settings", callback_data="btn_settings_menu"),
+            InlineKeyboardButton("📊 My Limits & Plan", callback_data="btn_mylimit")
         ],
         [
-            InlineKeyboardButton("🎟️ Redeem Code", callback_data="btn_redeem_guide"),
-            InlineKeyboardButton("🛑 Force Stop Task", callback_data="btn_force_stop")
+            InlineKeyboardButton("💎 VIP Plans", callback_data="see_plan"),
+            InlineKeyboardButton("🎟️ Redeem Code", callback_data="btn_redeem_guide")
         ],
         [
-            InlineKeyboardButton("⚡ Server Speedtest", callback_data="btn_speedtest"),
-            InlineKeyboardButton("❓ Help & Guide", callback_data="btn_help")
+            InlineKeyboardButton("🛑 Force Stop Task", callback_data="btn_force_stop"),
+            InlineKeyboardButton("⚡ Server Speedtest", callback_data="btn_speedtest")
         ],
         [
+            InlineKeyboardButton("❓ Help & Guide", callback_data="btn_help"),
             InlineKeyboardButton("☎️ Contact Admin", url="https://t.me/ananomusbro")
         ]
     ]
@@ -163,6 +164,7 @@ async def start_cmd(client: Client, message: Message):
         "✨ अब आपको कमांड टाइप करने की कोई ज़रूरत नहीं है! नीचे दिए गए **इंटरैक्टिव बटनों** से सीधे सब कुछ नियंत्रित करें:\n\n"
         "• 📥 **Single Extract**: किसी भी पोस्ट का लिंक सीधे भेजें\n"
         "• 📦 **Batch Extract**: एक साथ हज़ारों फाइलें निकालें\n"
+        "• 🔄 **Auto Forward**: किसी भी चैनल के संदेश सीधे अपने चैनल में भेजें\n"
         "• 🔑 **Login / Session**: प्राइवेट/रिस्ट्रिक्टेड चैनल एक्सेस करें\n"
         "• ⚙️ **Settings**: थंबनेल, रीनेम टैग, कैप्शन, वाटरमार्क सेट करें\n"
         "• 📊 **My Limits**: अपना कोटा और एक्टिव प्लान चेक करें\n"
