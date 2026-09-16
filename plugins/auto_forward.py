@@ -862,8 +862,16 @@ async def fwd_ui_custom_settings_cb(client: Client, callback: CallbackQuery):
             InlineKeyboardButton(words_btn_text, callback_data="fwd_ui_toggle_word_rule")
         ],
         [
-            InlineKeyboardButton("✏️ कैप्शन बदलें", callback_data="fwd_ui_set_fwd_caption"),
-            InlineKeyboardButton("🛠️ मुख्य सेटिंग्स मेनू", callback_data="btn_settings_menu")
+            InlineKeyboardButton("🗑️ डिलीट वर्ड्स (Delete Words)", callback_data="fwd_ui_set_delete_words"),
+            InlineKeyboardButton("🔄 रिप्लेस वर्ड्स (Replace Words)", callback_data="fwd_ui_set_replace_words")
+        ],
+        [
+            InlineKeyboardButton("✏️ कैप्शन सेट करें", callback_data="fwd_ui_set_fwd_caption"),
+            InlineKeyboardButton("🏷️ रीनेम टैग सेट करें", callback_data="fwd_ui_set_rename_tag")
+        ],
+        [
+            InlineKeyboardButton("🧹 डिलीट वर्ड्स साफ़ करें", callback_data="fwd_ui_clear_del_words"),
+            InlineKeyboardButton("❌ रिप्लेस रूल्स साफ़ करें", callback_data="fwd_ui_clear_rep_words")
         ],
         [
             InlineKeyboardButton("🔙 ऑटो फॉरवर्ड पैनल", callback_data="btn_auto_forward")
@@ -871,6 +879,74 @@ async def fwd_ui_custom_settings_cb(client: Client, callback: CallbackQuery):
     ])
 
     await callback.message.edit_text(text, reply_markup=kb)
+
+
+@app.on_callback_query(filters.regex("^fwd_ui_set_delete_words$"))
+async def fwd_ui_set_delete_words_cb(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    FWD_SESSIONS[user_id] = {"action": "input_del_words"}
+    cancel_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 रद्द करें (Cancel)", callback_data="fwd_ui_custom_settings")]
+    ])
+    await callback.message.edit_text(
+        "🗑️ **डिलीट वर्ड्स जोड़ें (Add Delete Words):**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👉 वे सभी शब्द भेजें जिन्हें आप फ़ाइल नाम और कैप्शन से हटाना चाहते हैं:\n\n"
+        "💡 *उदाहरण:* `promo ad www.site.com @oldchannel`\n\n"
+        "*(शब्दों को स्पेस या कॉमा देकर एक साथ भेज सकते हैं)*",
+        reply_markup=cancel_kb
+    )
+
+
+@app.on_callback_query(filters.regex("^fwd_ui_set_replace_words$"))
+async def fwd_ui_set_replace_words_cb(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    FWD_SESSIONS[user_id] = {"action": "input_rep_words"}
+    cancel_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 रद्द करें (Cancel)", callback_data="fwd_ui_custom_settings")]
+    ])
+    await callback.message.edit_text(
+        "🔄 **वर्ड रिप्लेसमेंट नियम जोड़ें (Word Replacement):**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👉 जिन शब्दों को बदलना है, उन्हें इस तरह भेजें:\n"
+        "`'पुराना_शब्द' 'नया_शब्द'` या `पुराना -> नया`\n\n"
+        "💡 *हाइपरलिंक भी लगा सकते हैं (जैसे 'पुराना' '[मेरा चैनल](https://t.me/mychannel)')*\n"
+        "उदा: `'Join @Old' '[Join My Channel](https://t.me/newchannel)'`",
+        reply_markup=cancel_kb
+    )
+
+
+@app.on_callback_query(filters.regex("^fwd_ui_set_rename_tag$"))
+async def fwd_ui_set_rename_tag_cb(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    FWD_SESSIONS[user_id] = {"action": "input_rename_tag"}
+    cancel_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 रद्द करें (Cancel)", callback_data="fwd_ui_custom_settings")]
+    ])
+    await callback.message.edit_text(
+        "🏷️ **रीनेम टैग सेट करें (Set Rename Tag):**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👉 फाइलों के नाम के अंत में जोड़ने के लिए अपना टैग भेजें:\n\n"
+        "💡 *उदाहरण:* `@MyChannel`\n\n"
+        "टैग हटाने के लिए केवल `None` या `Clear` लिखकर भेजें।",
+        reply_markup=cancel_kb
+    )
+
+
+@app.on_callback_query(filters.regex("^fwd_ui_clear_del_words$"))
+async def fwd_ui_clear_del_words_cb(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    await users_collection.update_one({'user_id': user_id}, {'$unset': {'delete_words': ''}})
+    await callback.answer("🧹 सभी डिलीट वर्ड्स साफ़ कर दिए गए!", show_alert=True)
+    await fwd_ui_custom_settings_cb(client, callback)
+
+
+@app.on_callback_query(filters.regex("^fwd_ui_clear_rep_words$"))
+async def fwd_ui_clear_rep_words_cb(client: Client, callback: CallbackQuery):
+    user_id = callback.from_user.id
+    await users_collection.update_one({'user_id': user_id}, {'$unset': {'replacement_words': ''}})
+    await callback.answer("❌ सभी रिप्लेसमेंट रूल्स साफ़ कर दिए गए!", show_alert=True)
+    await fwd_ui_custom_settings_cb(client, callback)
 
 
 @app.on_callback_query(filters.regex("^fwd_ui_toggle_cap_rule$"))
@@ -1194,6 +1270,83 @@ async def fwd_panel_text_handler(client: Client, message: Message):
         else:
             await save_user_data(user_id, 'caption', text)
             await message.reply_text("✅ **कस्टम कैप्शन सफलतापूर्वक सहेज लिया गया।**")
+
+        cfg = await get_fwd_config(user_id)
+        kb = get_fwd_panel_keyboard(cfg)
+        panel_text = await get_fwd_panel_text(user_id)
+        await message.reply_text(panel_text, reply_markup=kb)
+        return
+
+    # 4. INPUT DELETE WORDS
+    elif action == "input_del_words":
+        FWD_SESSIONS.pop(user_id, None)
+        from utils.func import parse_delete_words
+        words = parse_delete_words(text)
+        if words:
+            existing = await get_user_data_key(user_id, 'delete_words', []) or []
+            updated = list(dict.fromkeys(existing + words))
+            await save_user_data(user_id, 'delete_words', updated)
+            await message.reply_text(
+                f"✅ **डिलीट लिस्ट में जोड़े गए शब्द:**\n`{', '.join(words)}`\n\n"
+                f"📊 **कुल एक्टिव डिलीट वर्ड्स:** {len(updated)}"
+            )
+        else:
+            await message.reply_text("❌ कोई मान्य शब्द नहीं मिला।")
+
+        cfg = await get_fwd_config(user_id)
+        kb = get_fwd_panel_keyboard(cfg)
+        panel_text = await get_fwd_panel_text(user_id)
+        await message.reply_text(panel_text, reply_markup=kb)
+        return
+
+    # 5. INPUT REPLACE WORDS
+    elif action == "input_rep_words":
+        FWD_SESSIONS.pop(user_id, None)
+        from utils.func import parse_replacement_rules, extract_message_markdown
+        raw_input = extract_message_markdown(message) or text
+        matches = re.findall(r"""['"]([^'"]+)['"]\s*['"]([^'"]*)['"]""", raw_input)
+        if not matches:
+            matches = parse_replacement_rules(raw_input)
+
+        if matches:
+            replacements = await get_user_data_key(user_id, 'replacement_words', {}) or {}
+            added = []
+            for old_w, new_w in matches:
+                old_clean = old_w.strip()
+                new_clean = new_w.strip()
+                if old_clean:
+                    replacements[old_clean] = new_clean
+                    added.append(f"• `{old_clean}` ➔ `{new_clean}`")
+            await save_user_data(user_id, 'replacement_words', replacements)
+            await message.reply_text(
+                "✅ **वर्ड रिप्लेसमेंट नियम सेव हो गए!**\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                + "\n".join(added) + "\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 **कुल एक्टिव नियम:** {len(replacements)}"
+            )
+        else:
+            await message.reply_text(
+                "❌ **अमान्य फॉर्मेट!**\n"
+                "कृपया `'पुराना_शब्द' 'नया_शब्द'` या `पुराना -> नया` फॉर्मेट में भेजें।\n"
+                "💡 उदाहरण: `'Join @Old' '[My Channel](https://t.me/new)'`"
+            )
+
+        cfg = await get_fwd_config(user_id)
+        kb = get_fwd_panel_keyboard(cfg)
+        panel_text = await get_fwd_panel_text(user_id)
+        await message.reply_text(panel_text, reply_markup=kb)
+        return
+
+    # 6. INPUT RENAME TAG
+    elif action == "input_rename_tag":
+        FWD_SESSIONS.pop(user_id, None)
+        if text.lower() in ["none", "clear", "हटाएं"]:
+            await save_user_data(user_id, 'rename_tag', '')
+            await message.reply_text("✅ **रीनेम टैग हटा दिया गया।**")
+        else:
+            await save_user_data(user_id, 'rename_tag', text)
+            await message.reply_text(f"✅ **रीनेम टैग सेट किया गया:** `{text}`")
 
         cfg = await get_fwd_config(user_id)
         kb = get_fwd_panel_keyboard(cfg)
