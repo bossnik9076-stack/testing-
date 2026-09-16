@@ -18,6 +18,7 @@ import plugins.gencode
 import plugins.stats
 import plugins.admin
 import plugins.batch
+from utils.func import clean_stale_thumbnails, auto_clean_thumbnails_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +27,12 @@ logging.basicConfig(
 logger = logging.getLogger("RestrictedSaverBot")
 
 os.makedirs(THUMB_DIR, exist_ok=True)
+try:
+    purged = clean_stale_thumbnails(max_age_seconds=0)
+    if purged > 0:
+        logger.info(f"Purged {purged} stale temporary thumbnail(s) on startup.")
+except Exception as e:
+    logger.warning(f"Error purging stale thumbnails on startup: {e}")
 
 if not os.path.exists(DEFAULT_THUMB):
     try:
@@ -36,6 +43,8 @@ if not os.path.exists(DEFAULT_THUMB):
         logger.warning(f"Failed to download default thumbnail: {e}")
 
 async def main():
+    # Start auto-cleanup loop for temporary thumbnails
+    asyncio.create_task(auto_clean_thumbnails_loop())
     # Start web dashboard on port 3000 for AI Studio health check and live preview
     try:
         from aiohttp import web

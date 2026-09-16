@@ -345,8 +345,12 @@ async def py_settings_text_handler(client, message: Message):
         [PKB("🔙 सेटिंग्स मेनू", callback_data="btn_settings_menu")]
     ])
 
+    # 1. REPLACE WORDS HANDLER
     if step == "setreplacement":
-        matches = parse_replacement_rules(raw_text or text)
+        # Extract pairs enclosed in single or double quotes
+        matches = re.findall(r"""['"]([^'"]+)['"]\s*['"]([^'"]*)['"]""", text)
+        if not matches:
+            matches = parse_replacement_rules(raw_text or text)
         if matches:
             replacements = await get_user_data_key(user_id, 'replacement_words', {}) or {}
             added_rules = []
@@ -355,10 +359,7 @@ async def py_settings_text_handler(client, message: Message):
                 new_clean = new_w.strip()
                 if old_clean:
                     replacements[old_clean] = new_clean
-                    if new_clean.startswith('[') and '](' in new_clean and new_clean.endswith(')'):
-                        added_rules.append(f"• `{old_clean}` ➔ {new_clean}")
-                    else:
-                        added_rules.append(f"• `{old_clean}` ➔ `{new_clean}`")
+                    added_rules.append(f"• `{old_clean}` ➔ `{new_clean}`")
 
             if added_rules:
                 await save_user_data(user_id, 'replacement_words', replacements)
@@ -392,12 +393,10 @@ async def py_settings_text_handler(client, message: Message):
             "━━━━━━━━━━━━━━━━━━━━\n"
             "आपने गलत फॉर्मेट में शब्द भेजे हैं।\n\n"
             "👉 **कृपया इस सही फॉर्मेट में भेजें:**\n"
-            "`'पुराना_शब्द' 'नया_शब्द'` या `\"पुराना_शब्द\" \"नया_शब्द\"`\n"
-            "या\n"
-            "`पुराना_शब्द -> नया_शब्द`\n\n"
+            "`'पुराना_शब्द' 'नया_शब्द'` या `\"पुराना_शब्द\" \"नया_शब्द\"`\n\n"
             "💡 **उदाहरण (Examples):**\n"
             "• `'Join @OldChannel' '@MyNewChannel'`\n"
-            "• `'Download Now' 'Watch Here'`\n\n"
+            "• `'Join Us' '[My Channel](https://t.me/example)'`\n\n"
             "*(कृपया ऊपर दिए गए फॉर्मेट के अनुसार दोबारा भेजें या नीचे दिए गए बटन से रद्द करें)*"
         )
         await message.reply_text(error_text, reply_markup=cancel_kb)
@@ -798,7 +797,9 @@ async def direct_setreplacement_cmd(client, message: Message):
             "💡 *उदाहरण:* `/replace 'Join @OldChannel' '@MyNewChannel'`\n"
             "*(रद्द करने के लिए `/cancel` भेजें)*"
         )
-    matches = parse_replacement_rules(parts[1])
+    matches = re.findall(r"""['"]([^'"]+)['"]\s*['"]([^'"]*)['"]""", parts[1])
+    if not matches:
+        matches = parse_replacement_rules(parts[1])
     if matches:
         replacements = await get_user_data_key(user_id, 'replacement_words', {}) or {}
         added = []
@@ -807,10 +808,7 @@ async def direct_setreplacement_cmd(client, message: Message):
             new_clean = new_w.strip()
             if old_clean:
                 replacements[old_clean] = new_clean
-                if new_clean.startswith('[') and '](' in new_clean and new_clean.endswith(')'):
-                    added.append(f"• `{old_clean}` ➔ {new_clean}")
-                else:
-                    added.append(f"• `{old_clean}` ➔ `{new_clean}`")
+                added.append(f"• `{old_clean}` ➔ `{new_clean}`")
         await save_user_data(user_id, 'replacement_words', replacements)
         set_settings_step(user_id, None)
         active_conversations.pop(user_id, None)
@@ -996,7 +994,9 @@ if gf:
                     raw_text = event.text or event.message.message or ""
             else:
                 raw_text = event.text or event.message.message or ""
-            matches = parse_replacement_rules(raw_text)
+            matches = re.findall(r"""['"]([^'"]+)['"]\s*['"]([^'"]*)['"]""", raw_text)
+            if not matches:
+                matches = parse_replacement_rules(raw_text)
             if matches:
                 replacements = await get_user_data_key(user_id, 'replacement_words', {}) or {}
                 added = []
@@ -1005,10 +1005,7 @@ if gf:
                     new_clean = new_w.strip()
                     if old_clean:
                         replacements[old_clean] = new_clean
-                        if new_clean.startswith('[') and '](' in new_clean and new_clean.endswith(')'):
-                            added.append(f"• `{old_clean}` ➔ {new_clean}")
-                        else:
-                            added.append(f"• `{old_clean}` ➔ `{new_clean}`")
+                        added.append(f"• `{old_clean}` ➔ `{new_clean}`")
                 await save_user_data(user_id, 'replacement_words', replacements)
                 await event.respond(f"✅ वर्ड रिप्लेसमेंट सेव हुआ!\n" + "\n".join(added))
                 del active_conversations[user_id]

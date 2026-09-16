@@ -40,6 +40,7 @@ IV_KEY       = os.getenv("IV_KEY", "s7Yx5CpVmE3F")
 DEFAULT_THUMB = os.getenv("DEFAULT_THUMB", "default_thumb.jpg")
 DEFAULT_THUMB_URL = "https://i.postimg.cc/2ysJtXKC/nikhil.png"
 THUMB_DIR = os.path.join(os.path.dirname(__file__), "thumbnails")
+os.makedirs(THUMB_DIR, exist_ok=True)
 
 FREEMIUM_LIMIT = int(os.getenv("FREEMIUM_LIMIT", "1"))
 PREMIUM_LIMIT  = int(os.getenv("PREMIUM_LIMIT", "50000"))

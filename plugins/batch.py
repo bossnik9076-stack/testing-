@@ -8,7 +8,7 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant
 from pyrogram.enums import ParseMode
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
-from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata
+from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata, cleanup_temp_thumb
 from utils.func import (
     get_user_data_key, process_text_with_rules, is_premium_user, E,
     can_user_extract, record_user_extraction, parse_replacement_rules, save_user_data,
@@ -372,9 +372,21 @@ async def send_media_file(client, target_chat, f, m, ft, th, dur, h, w, prog, p,
     file_ext = os.path.splitext(f)[1].lower()
     caption_text = ft if ft else (m.caption if m.caption else None)
     
+    async def _safe_send(send_func, **kwargs):
+        try:
+            return await send_func(**kwargs, parse_mode=ParseMode.MARKDOWN)
+        except Exception as err:
+            err_str = str(err).lower()
+            if any(k in err_str for k in ['markdown', 'entity', 'tag', 'entities', 'bracket']):
+                logger.warning(f"Markdown parse warning ({err}), retrying without parse_mode")
+                kwargs.pop('parse_mode', None)
+                return await send_func(**kwargs)
+            raise err
+
     if m.video or (m.document and file_ext in video_extensions):
-        return await client.send_video(
-            target_chat, video=f, caption=caption_text, parse_mode=ParseMode.MARKDOWN,
+        return await _safe_send(
+            client.send_video,
+            chat_id=target_chat, video=f, caption=caption_text,
             thumb=th, width=w, height=h, duration=dur,
             progress=prog, progress_args=(client, d, p.id, st),
             reply_to_message_id=rtmid
@@ -392,20 +404,23 @@ async def send_media_file(client, target_chat, f, m, ft, th, dur, h, w, prog, p,
     elif m.sticker:
         return await client.send_sticker(target_chat, m.sticker.file_id, reply_to_message_id=rtmid)
     elif m.audio or (m.document and file_ext in audio_extensions):
-        return await client.send_audio(
-            target_chat, audio=f, caption=caption_text, parse_mode=ParseMode.MARKDOWN,
+        return await _safe_send(
+            client.send_audio,
+            chat_id=target_chat, audio=f, caption=caption_text,
             thumb=th, progress=prog, progress_args=(client, d, p.id, st),
             reply_to_message_id=rtmid
         )
     elif m.photo:
-        return await client.send_photo(
-            target_chat, photo=f, caption=caption_text, parse_mode=ParseMode.MARKDOWN,
+        return await _safe_send(
+            client.send_photo,
+            chat_id=target_chat, photo=f, caption=caption_text,
             progress=prog, progress_args=(client, d, p.id, st),
             reply_to_message_id=rtmid
         )
     else:
-        return await client.send_document(
-            target_chat, document=f, caption=caption_text, parse_mode=ParseMode.MARKDOWN,
+        return await _safe_send(
+            client.send_document,
+            chat_id=target_chat, document=f, caption=caption_text,
             file_name=os.path.basename(f),
             progress=prog, progress_args=(client, d, p.id, st),
             reply_to_message_id=rtmid
@@ -435,18 +450,32 @@ async def process_msg(c, u, m, d, lt, uid, i):
         
         # Extract markdown preserving existing links/formatting
         orig_text = ""
-        text_obj = m.caption or m.text
-        entities = m.caption_entities or m.entities
-        if text_obj and entities:
+        if hasattr(m, 'caption') and m.caption:
+            if hasattr(m.caption, 'markdown') and m.caption.markdown:
+                orig_text = str(m.caption.markdown)
+            elif getattr(m, 'caption_entities', None) and hasattr(c, 'parser'):
+                try:
+                    orig_text = c.parser.unparse(str(m.caption), m.caption_entities, is_html=False)
+                except Exception:
+                    orig_text = str(m.caption)
+            else:
+                orig_text = str(m.caption)
+        elif hasattr(m, 'text') and m.text:
+            if hasattr(m.text, 'markdown') and m.text.markdown:
+                orig_text = str(m.text.markdown)
+            elif getattr(m, 'entities', None) and hasattr(c, 'parser'):
+                try:
+                    orig_text = c.parser.unparse(str(m.text), m.entities, is_html=False)
+                except Exception:
+                    orig_text = str(m.text)
+            else:
+                orig_text = str(m.text)
+        elif hasattr(m, 'message') and m.message:
             try:
-                from pyrogram.parser import Parser
-                orig_text = Parser.unparse(str(text_obj), entities, is_html=False)
+                from telethon.extensions import markdown as tmd
+                orig_text = tmd.unparse(m.message, getattr(m, 'entities', []))
             except Exception:
-                pass
-        if not orig_text and hasattr(text_obj, 'markdown') and text_obj.markdown:
-            orig_text = str(text_obj.markdown)
-        if not orig_text:
-            orig_text = str(text_obj or '')
+                orig_text = str(m.message)
 
         proc_text = await process_text_with_rules(d, orig_text)
         user_cap = await get_user_data_key(d, 'caption', '') or ''
@@ -461,7 +490,13 @@ async def process_msg(c, u, m, d, lt, uid, i):
                     if sent:
                         return 'Forwarded directly.'
                 except Exception:
-                    pass
+                    if ft:
+                        try:
+                            sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
+                            if sent:
+                                return 'Forwarded directly.'
+                        except Exception:
+                            pass
                 
                 # 2. Try bot forward_messages
                 try:
@@ -581,9 +616,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 except Exception:
                     pass
             if os.path.exists(f): os.remove(f)
-            if th and isinstance(th, str) and os.path.exists(th) and (th.startswith("thumb_") or th.startswith("temp_thumb_")):
-                try: os.remove(th)
-                except Exception: pass
+            cleanup_temp_thumb(th)
             await c.delete_messages(d, p.id)
             return 'Done.'
         
@@ -627,6 +660,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
                     raise bot_err
         except asyncio.CancelledError:
             if os.path.exists(f): os.remove(f)
+            cleanup_temp_thumb(th)
             return 'Cancelled.'
         except Exception as e:
             err_msg = str(e)
@@ -635,16 +669,12 @@ async def process_msg(c, u, m, d, lt, uid, i):
             else:
                 await c.edit_message_text(d, p.id, f'❌ Upload failed: {err_msg[:40]}')
             if os.path.exists(f): os.remove(f)
-            if th and isinstance(th, str) and os.path.exists(th) and (th.startswith("thumb_") or th.startswith("temp_thumb_")):
-                try: os.remove(th)
-                except Exception: pass
+            cleanup_temp_thumb(th)
             return 'Failed.'
 
         if os.path.exists(f):
             os.remove(f)
-        if th and isinstance(th, str) and os.path.exists(th) and (th.startswith("thumb_") or th.startswith("temp_thumb_")):
-            try: os.remove(th)
-            except Exception: pass
+        cleanup_temp_thumb(th)
             
         if sent:
             try:

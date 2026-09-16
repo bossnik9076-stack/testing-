@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image
-from config import MONGO_DB as MONGO_URI, DB_NAME, SETTINGS_MONGO_URI, SETTINGS_DB_NAME
+from config import MONGO_DB as MONGO_URI, DB_NAME, SETTINGS_MONGO_URI, SETTINGS_DB_NAME, THUMB_DIR, DEFAULT_THUMB
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -498,8 +498,9 @@ def apply_single_replacement(text: str, old_word: str, new_replacement: str) -> 
     """
     Safely replaces occurrences of old_word with new_replacement.
     Handles both plain text and markdown links without corrupting syntax:
-    - If old_word had a link in the source, it updates the link or anchor cleanly.
+    - If old_word had a link in the source, it updates the link URL or anchor cleanly.
     - If old_word was plain, it becomes new_replacement (with link if specified).
+    - If old_word was a full markdown link, it replaces cleanly.
     - Prevents double brackets or broken URLs.
     """
     if not text or not old_word:
@@ -512,6 +513,12 @@ def apply_single_replacement(text: str, old_word: str, new_replacement: str) -> 
         new_anchor, new_url = link_match.groups()
     else:
         new_anchor, new_url = new_replacement, None
+
+    # Check if old_word is itself a markdown link [old_anchor](old_url)
+    if old_word.strip().startswith('[') and '](' in old_word and old_word.strip().endswith(')'):
+        pattern = re.compile(re.escape(old_word.strip()), re.IGNORECASE)
+        if pattern.search(text):
+            return pattern.sub(new_replacement, text)
 
     old_pattern = re.compile(re.escape(old_word), re.IGNORECASE)
 
@@ -540,6 +547,12 @@ def apply_single_replacement(text: str, old_word: str, new_replacement: str) -> 
             else:
                 updated_anchor = old_pattern.sub(lambda _: new_replacement, anchor)
                 result.append(f"[{updated_anchor}]({url})")
+        elif old_pattern.search(url):
+            if is_new_link:
+                result.append(f"[{new_anchor}]({new_url})")
+            else:
+                updated_url = old_pattern.sub(lambda _: new_replacement, url)
+                result.append(f"[{anchor}]({updated_url})")
         else:
             result.append(m.group(0))
 
@@ -551,7 +564,10 @@ def apply_single_replacement(text: str, old_word: str, new_replacement: str) -> 
         tail = old_pattern.sub(lambda _: new_replacement, tail)
         result.append(tail)
 
-    return ''.join(result)
+    res = ''.join(result)
+    # Fix any accidental double brackets like [[text](url)](url)
+    res = re.sub(r'\[\s*\[([^\]]+)\]\(([^)]+)\)\s*\]\([^)]+\)', r'[\1](\2)', res)
+    return res
 
 def apply_single_delete(text: str, word_to_delete: str) -> str:
     """
@@ -580,6 +596,9 @@ def apply_single_delete(text: str, word_to_delete: str) -> str:
             new_anchor = del_pattern.sub('', anchor).strip()
             if new_anchor:
                 result.append(f"[{new_anchor}]({url})")
+        elif del_pattern.search(url):
+            # If deleted word was in URL, drop link or keep anchor as plain text
+            result.append(anchor)
         else:
             result.append(m.group(0))
 
@@ -631,19 +650,20 @@ async def process_text_with_rules(user_id: int, text: str) -> str:
         return text
 
 async def screenshot(video: str, duration: int, sender: str) -> str | None:
+    os.makedirs(THUMB_DIR, exist_ok=True)
     existing_screenshot = f"{sender}.jpg"
     if os.path.exists(existing_screenshot):
         try:
             with Image.open(existing_screenshot) as img:
                 img.thumbnail((1280, 720))
-                thumb_out = f"thumb_{sender}.jpg"
+                thumb_out = os.path.join(THUMB_DIR, f"thumb_{sender}_{int(time.time()*1000)}.jpg")
                 img.convert('RGB').save(thumb_out, "JPEG", quality=85)
                 return thumb_out
         except Exception:
             return existing_screenshot
 
     try:
-        output_file = f"temp_thumb_{int(time.time())}.jpg"
+        output_file = os.path.join(THUMB_DIR, f"temp_thumb_{sender}_{int(time.time()*1000)}.jpg")
         time_stamp = hhmmss(max(1, duration // 2))
         cmd = [
             "ffmpeg",
@@ -666,6 +686,76 @@ async def screenshot(video: str, duration: int, sender: str) -> str | None:
     except Exception as e:
         logger.warning(f"Screenshot fallback error: {e}")
     return None
+
+def cleanup_temp_thumb(th: str | None) -> None:
+    """
+    Safely deletes temporary thumbnails.
+    NEVER deletes user's permanent custom thumbnail ({user_id}.jpg) or DEFAULT_THUMB.
+    """
+    if not th or not isinstance(th, str) or not os.path.exists(th):
+        return
+    base = os.path.basename(th)
+    # Never delete user's permanent custom thumbnail (e.g. 12345678.jpg) or default thumbnail
+    if re.match(r"^\d+\.jpg$", base) or base == DEFAULT_THUMB:
+        return
+    # Delete if it's a generated temporary thumbnail
+    try:
+        os.remove(th)
+    except Exception:
+        pass
+
+def clean_stale_thumbnails(max_age_seconds: int = 300) -> int:
+    """
+    Cleans up all temporary thumbnail files from THUMB_DIR (thumbnails/)
+    and any legacy temp_thumb_*.jpg files in the root server directory.
+    NEVER touches permanent user custom thumbnails ({user_id}.jpg) or DEFAULT_THUMB.
+    """
+    deleted_count = 0
+    now = time.time()
+    
+    # 1. Purge temp files in THUMB_DIR (thumbnails/)
+    if os.path.exists(THUMB_DIR):
+        for fname in os.listdir(THUMB_DIR):
+            fpath = os.path.join(THUMB_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue
+            if re.match(r"^\d+\.jpg$", fname) or fname == DEFAULT_THUMB:
+                continue
+            try:
+                mtime = os.path.getmtime(fpath)
+                if (now - mtime) >= max_age_seconds:
+                    os.remove(fpath)
+                    deleted_count += 1
+            except Exception:
+                pass
+                
+    # 2. Purge legacy temp_thumb_*.jpg or thumb_*_*.jpg from root server directory
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        for fname in os.listdir(root_dir):
+            if (fname.startswith("temp_thumb_") or (fname.startswith("thumb_") and "_" in fname)) and fname.endswith(".jpg"):
+                fpath = os.path.join(root_dir, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                        if (now - mtime) >= max_age_seconds:
+                            os.remove(fpath)
+                            deleted_count += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+        
+    return deleted_count
+
+async def auto_clean_thumbnails_loop():
+    """Background task to periodically clean up temporary thumbnails."""
+    while True:
+        try:
+            clean_stale_thumbnails(max_age_seconds=180)
+        except Exception:
+            pass
+        await asyncio.sleep(300)
 
 async def get_video_metadata(file_path: str) -> dict:
     default_values = {'width': 1280, 'height': 720, 'duration': 0}
