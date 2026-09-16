@@ -8,6 +8,12 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
+try:
+    import pyrogram.utils
+    pyrogram.utils.MIN_CHANNEL_ID = -100999999999999
+except Exception:
+    pass
+
 from pyrogram import Client as PyroClient
 from telethon import TelegramClient
 from telethon.sessions import MemorySession

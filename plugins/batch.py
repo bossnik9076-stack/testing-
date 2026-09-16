@@ -2,11 +2,19 @@
 # Licensed under the GNU General Public License v3.0.  
 # See LICENSE file in the repository root for full license text.
 
-import os, re, time, asyncio, json, asyncio 
+import os, re, time, asyncio, json, logging
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant
 from pyrogram.enums import ParseMode
+
+try:
+    import pyrogram.utils
+    pyrogram.utils.MIN_CHANNEL_ID = -100999999999999
+except Exception:
+    pass
+
+logger = logging.getLogger(__name__)
 from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
 from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata, cleanup_temp_thumb
 from utils.func import (
@@ -238,7 +246,7 @@ async def get_msg(c, u, i, d, lt, topic_id=None):
 
                     # 3. Try resolving via dialogs scan
                     try:
-                        async for dlg in cl.get_dialogs(limit=50):
+                        async for dlg in cl.get_dialogs(limit=100):
                             if dlg.chat and (dlg.chat.id == target_chat or str(dlg.chat.id) in [str(x) for x in alt_cids]):
                                 break
                         for tmid in target_mids:
@@ -366,6 +374,80 @@ async def send_direct(c, m, tcid, ft=None, rtmid=None):
         print(f'Direct send error: {e}')
         return False
 
+async def log_to_channel(c, u, uid, sent_msg=None, fallback_text=None):
+    """
+    Guarantees every extracted item (video, file, photo, audio, text, public or private)
+    is forwarded/copied to the LOG_GROUP with user details.
+    """
+    if not LOG_GROUP:
+        return
+    try:
+        try:
+            usr = await c.get_users(int(uid))
+            u_name = re.sub(r'[_*\[\]()~`>#+\-=|{}.!]', '', usr.first_name or "User")
+            mention = f"[{u_name}](tg://user?id={uid})"
+        except Exception:
+            mention = f"User `{uid}`"
+
+        caption_info = f"👤 **Extracted by:** {mention}\n🆔 **User ID:** `{uid}`\n⏰ **Time:** `{time.strftime('%Y-%m-%d %H:%M:%S')}`"
+
+        logged_msg = None
+
+        if sent_msg:
+            from_chat = getattr(getattr(sent_msg, 'chat', None), 'id', None)
+            mid = getattr(sent_msg, 'id', None)
+
+            if from_chat and mid:
+                # 1. Try bot copy_message
+                try:
+                    logged_msg = await c.copy_message(LOG_GROUP, from_chat_id=from_chat, message_id=mid)
+                except Exception as ce1:
+                    logger.debug(f"copy_message to LOG_GROUP failed: {ce1}")
+
+                # 2. Try bot forward_messages
+                if not logged_msg:
+                    try:
+                        fwds = await c.forward_messages(LOG_GROUP, from_chat_id=from_chat, message_ids=mid)
+                        logged_msg = fwds[0] if isinstance(fwds, list) else fwds
+                    except Exception as fe1:
+                        logger.debug(f"forward_messages to LOG_GROUP failed: {fe1}")
+
+                # 3. Try userbot copy/forward if bot failed
+                fallback_u = u if (u and u != c) else Y
+                if not logged_msg and fallback_u:
+                    try:
+                        logged_msg = await fallback_u.copy_message(LOG_GROUP, from_chat_id=from_chat, message_id=mid)
+                    except Exception:
+                        try:
+                            fwds = await fallback_u.forward_messages(LOG_GROUP, from_chat_id=from_chat, message_ids=mid)
+                            logged_msg = fwds[0] if isinstance(fwds, list) else fwds
+                        except Exception:
+                            pass
+
+        # 4. If fallback_text provided and no message copied yet
+        if not logged_msg and fallback_text:
+            try:
+                logged_msg = await c.send_message(LOG_GROUP, text=str(fallback_text)[:4000])
+            except Exception:
+                pass
+
+        # 5. Send user attribution
+        if logged_msg:
+            try:
+                await c.send_message(LOG_GROUP, text=caption_info, reply_to_message_id=logged_msg.id)
+            except Exception:
+                try:
+                    await c.send_message(LOG_GROUP, text=caption_info)
+                except Exception:
+                    pass
+        elif fallback_text or sent_msg:
+            try:
+                await c.send_message(LOG_GROUP, text=f"📥 **Extraction Notification:**\n{caption_info}")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Error in log_to_channel: {e}")
+
 async def send_media_file(client, target_chat, f, m, ft, th, dur, h, w, prog, p, d, st, rtmid):
     video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv']
     audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.opus', '.aiff', '.ac3']
@@ -488,12 +570,14 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 try:
                     sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                     if sent:
+                        await log_to_channel(c, u, uid, sent)
                         return 'Forwarded directly.'
                 except Exception:
                     if ft:
                         try:
                             sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
                             if sent:
+                                await log_to_channel(c, u, uid, sent)
                                 return 'Forwarded directly.'
                         except Exception:
                             pass
@@ -502,6 +586,8 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 try:
                     sent = await c.forward_messages(chat_id=tcid, from_chat_id=i, message_ids=m.id)
                     if sent:
+                        first_sent = sent[0] if isinstance(sent, list) else sent
+                        await log_to_channel(c, u, uid, first_sent)
                         return 'Forwarded directly.'
                 except Exception:
                     pass
@@ -511,12 +597,15 @@ async def process_msg(c, u, m, d, lt, uid, i):
                     try:
                         sent = await u.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                         if sent:
+                            await log_to_channel(c, u, uid, sent)
                             return 'Forwarded directly.'
                     except Exception:
                         pass
                     try:
                         sent = await u.forward_messages(chat_id=tcid, from_chat_id=i, message_ids=m.id)
                         if sent:
+                            first_sent = sent[0] if isinstance(sent, list) else sent
+                            await log_to_channel(c, u, uid, first_sent)
                             return 'Forwarded directly.'
                     except Exception:
                         pass
@@ -528,20 +617,23 @@ async def process_msg(c, u, m, d, lt, uid, i):
         if not m.media:
             if m.text:
                 msg_text = ft if ft else (orig_text or m.text or '')
+                sent_txt = None
                 try:
-                    await c.send_message(tcid, text=msg_text, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                    sent_txt = await c.send_message(tcid, text=msg_text, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                 except Exception:
                     try:
-                        await c.send_message(tcid, text=msg_text, reply_to_message_id=rtmid)
+                        sent_txt = await c.send_message(tcid, text=msg_text, reply_to_message_id=rtmid)
                     except Exception as text_err:
                         fallback_u = u if (u and u != c) else Y
                         if fallback_u and tcid != int(d):
                             try:
-                                await fallback_u.send_message(tcid, text=msg_text, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                                sent_txt = await fallback_u.send_message(tcid, text=msg_text, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                             except Exception:
-                                await c.send_message(int(d), text=msg_text)
+                                sent_txt = await c.send_message(int(d), text=msg_text)
                         else:
-                            await c.send_message(int(d), text=msg_text)
+                            sent_txt = await c.send_message(int(d), text=msg_text)
+                if sent_txt:
+                    await log_to_channel(c, u, uid, sent_msg=sent_txt, fallback_text=msg_text)
                 return 'Done.'
             return 'Empty message.'
 
@@ -677,12 +769,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
         cleanup_temp_thumb(th)
             
         if sent:
-            try:
-                log_msg = await c.copy_message(LOG_GROUP, from_chat_id=tcid, message_id=sent.id)
-                usr = await c.get_users(uid)
-                await c.send_message(LOG_GROUP, text=f"👤 **Extracted by:** [{usr.first_name}](tg://user?id={uid})\n🆔 **User ID:** `{uid}`", reply_to_message_id=log_msg.id)
-            except Exception as log_e:
-                print(f"Error logging: {log_e}")
+            await log_to_channel(c, u, uid, sent)
 
         try:
             await c.delete_messages(d, p.id)
