@@ -630,63 +630,65 @@ async def process_msg(c, u, m, d, lt, uid, i):
 
         # PUBLIC LINK -> DIRECT FORWARD / SEND USING USER'S LOGIN SESSION (Zero VPS bandwidth)
         if lt == 'public':
-            # 1. If message was accessed directly by bot c and emp is False
-            if not emp.get(i, False):
-                try:
-                    if await send_direct(c, m, tcid, ft, rtmid, uid):
-                        return 'सीधे भेज दिया गया।'
-                except Exception:
-                    pass
-                try:
-                    sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
-                    if sent:
-                        await log_to_channel(c, u, uid, sent)
-                        return 'सीधे भेज दिया गया।'
-                except Exception:
-                    if ft:
-                        try:
-                            sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
-                            if sent:
-                                await log_to_channel(c, u, uid, sent)
-                                return 'सीधे भेज दिया गया।'
-                        except Exception:
-                            pass
-                try:
-                    sent = await c.forward_messages(chat_id=tcid, from_chat_id=i, message_ids=m.id)
-                    if sent:
-                        first_sent = sent[0] if isinstance(sent, list) else sent
-                        await log_to_channel(c, u, uid, first_sent)
-                        return 'सीधे भेज दिया गया।'
-                except Exception:
-                    pass
+            from_chat = getattr(m.chat, 'id', None) or (f"@{i}" if not str(i).startswith(('-', '@')) else i)
+            
+            # 1. First try BOT (c) direct copy/forward to user chat
+            try:
+                sent = await c.copy_message(chat_id=tcid, from_chat_id=from_chat, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                if sent:
+                    await log_to_channel(c, u, uid, sent)
+                    return 'सीधे भेज दिया गया।'
+            except Exception:
+                if ft:
+                    try:
+                        sent = await c.copy_message(chat_id=tcid, from_chat_id=from_chat, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
+                        if sent:
+                            await log_to_channel(c, u, uid, sent)
+                            return 'सीधे भेज दिया गया।'
+                    except Exception:
+                        pass
+            try:
+                sent = await c.forward_messages(chat_id=tcid, from_chat_id=from_chat, message_ids=m.id)
+                if sent:
+                    first_sent = sent[0] if isinstance(sent, list) else sent
+                    await log_to_channel(c, u, uid, first_sent)
+                    return 'सीधे भेज दिया गया।'
+            except Exception:
+                pass
+            try:
+                if await send_direct(c, m, tcid, ft, rtmid, uid):
+                    return 'सीधे भेज दिया गया।'
+            except Exception:
+                pass
 
             # 2. KEY: User's Logged-in Session ID (u) for Direct Forward/Send
-            # Even if forwarding is turned off in the public channel, send_direct by file_id or copy_message sends instantly!
+            # If bot was restricted in public channel, user's session copies or sends it!
             if u and u != c:
+                target_chat_u = "me" if (str(tcid) == str(uid)) else tcid
                 try:
-                    if await send_direct(u, m, tcid, ft, rtmid, uid):
-                        return 'सीधे भेज दिया गया।'
-                except Exception:
-                    pass
-                try:
-                    sent = await u.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                    sent = await u.copy_message(chat_id=target_chat_u, from_chat_id=from_chat, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                     if sent:
                         await log_to_channel(c, u, uid, sent)
                         return 'सीधे भेज दिया गया।'
                 except Exception:
                     if ft:
                         try:
-                            sent = await u.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
+                            sent = await u.copy_message(chat_id=target_chat_u, from_chat_id=from_chat, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
                             if sent:
                                 await log_to_channel(c, u, uid, sent)
                                 return 'सीधे भेज दिया गया।'
                         except Exception:
                             pass
                 try:
-                    sent = await u.forward_messages(chat_id=tcid, from_chat_id=i, message_ids=m.id)
+                    sent = await u.forward_messages(chat_id=target_chat_u, from_chat_id=from_chat, message_ids=m.id)
                     if sent:
                         first_sent = sent[0] if isinstance(sent, list) else sent
                         await log_to_channel(c, u, uid, first_sent)
+                        return 'सीधे भेज दिया गया।'
+                except Exception:
+                    pass
+                try:
+                    if await send_direct(u, m, target_chat_u, ft, rtmid, uid):
                         return 'सीधे भेज दिया गया।'
                 except Exception:
                     pass
@@ -694,14 +696,14 @@ async def process_msg(c, u, m, d, lt, uid, i):
             # 3. Fallback: Default userbot (Y) if available
             if Y and Y not in [c, u]:
                 try:
-                    if await send_direct(Y, m, tcid, ft, rtmid, uid):
+                    sent = await Y.copy_message(chat_id=tcid, from_chat_id=from_chat, message_id=m.id, caption=ft if ft else None, reply_to_message_id=rtmid)
+                    if sent:
+                        await log_to_channel(c, u, uid, sent)
                         return 'सीधे भेज दिया गया।'
                 except Exception:
                     pass
                 try:
-                    sent = await Y.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, reply_to_message_id=rtmid)
-                    if sent:
-                        await log_to_channel(c, u, uid, sent)
+                    if await send_direct(Y, m, tcid, ft, rtmid, uid):
                         return 'सीधे भेज दिया गया।'
                 except Exception:
                     pass
