@@ -112,7 +112,6 @@ try:
     import plugins.stats
     import plugins.admin
     import plugins.batch
-    import plugins.auto_forward
     from utils.func import clean_stale_thumbnails, auto_clean_thumbnails_loop
     has_bot_deps = True
 except ImportError as e:
@@ -172,18 +171,11 @@ async def main():
     logger.info("Pyrogram Bot Client started successfully. Bot is fully online!")
     
     try:
-        from utils.func import load_db_peers_into_storage
+        from utils.func import load_db_peers_into_storage, init_database_auto_cleanup
         await load_db_peers_into_storage(app)
+        await init_database_auto_cleanup()
     except Exception as e:
-        logger.warning(f"Error loading cached peers into bot storage: {e}")
-
-    try:
-        from plugins.auto_forward import sync_live_listeners_for_client
-        await sync_live_listeners_for_client(app)
-        if userbot:
-            await sync_live_listeners_for_client(userbot)
-    except Exception as e:
-        logger.warning(f"Error syncing live listeners on startup: {e}")
+        logger.warning(f"Error loading cached peers / auto-cleanup setup: {e}")
     
     await asyncio.Event().wait()
 

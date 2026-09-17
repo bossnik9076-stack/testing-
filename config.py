@@ -20,6 +20,9 @@ DB_NAME      = os.getenv("DB_NAME", "telegram_downloader")
 SETTINGS_MONGO_URI = os.getenv("SETTINGS_MONGO_URI", "mongodb+srv://nikhil_database:Nikhil9076%40123@nikhil.7fokdnr.mongodb.net/?appName=nikhil")
 SETTINGS_DB_NAME   = os.getenv("SETTINGS_DB_NAME", "telegram_settings_db")
 
+CACHE_MONGO_URI = os.getenv("CACHE_MONGO_URI", os.getenv("AUTO_FWD_MONGO_URI", "mongodb+srv://earlbrooks41441_db_user:4rXjXLns8Zk889GB@cluster0.bg89oki.mongodb.net/?appName=Cluster0"))
+CACHE_DB_NAME   = os.getenv("CACHE_DB_NAME", "telegram_cache_db")
+
 OWNER_ID     = list(map(int, os.getenv("OWNER_ID", "8693484744").split()))
 ADMINS       = OWNER_ID
 STRING       = os.getenv("STRING", "AQHtOxIAuJyJhLh1EUsu42IhSSdGvY081xQhalJOSxCNvOuVZIUKQYmWK1WgxF2kND6vf4OdkL9HuVQm4Dv83MXB3vQvUG2gc0i4BD-j2cqPeeLjqH-6MekWGVAC8X3nB8RnfwWYXqZ3TU7NX4VHtQ0673gYI9E-ITJFN_Uf8VAsC3smPEQoaT4qe9R_WCutv6l2dIpZH3XxHOHlDfKbNRshz-J_R8lM_li9pJ3Hgn9LyTr0sSxeN0q-RDo8Wyf4lhzgcX287w6JvhD95EbmssdheQnQZV7aLv_WUXU_h5ymoMXOJqOccSgKm_aNDM5ofKu980JekcPoHYrv67x38Wtp3H-mggAAAAIGLAzIAA")

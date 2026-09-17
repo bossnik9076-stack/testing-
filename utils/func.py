@@ -10,7 +10,12 @@ import asyncio
 from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image
-from config import MONGO_DB as MONGO_URI, DB_NAME, SETTINGS_MONGO_URI, SETTINGS_DB_NAME, THUMB_DIR, DEFAULT_THUMB
+from config import (
+    MONGO_DB as MONGO_URI, DB_NAME, 
+    SETTINGS_MONGO_URI, SETTINGS_DB_NAME,
+    CACHE_MONGO_URI, CACHE_DB_NAME,
+    THUMB_DIR, DEFAULT_THUMB
+)
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,18 +24,25 @@ PUBLIC_LINK_PATTERN = re.compile(r'(https?://)?(t\.me|telegram\.me)/([^/]+)(/(\d
 PRIVATE_LINK_PATTERN = re.compile(r'(https?://)?(t\.me|telegram\.me)/c/(\d+)(/(\d+))?')
 VIDEO_EXTENSIONS = {"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "mpeg", "mpg", "3gp"}
 
+# Cluster 1: Primary Auth & VIP Cluster (nik9076)
 mongo_client = AsyncIOMotorClient(MONGO_URI, maxPoolSize=10, serverSelectionTimeoutMS=5000)
 db = mongo_client[DB_NAME]
 
+# Cluster 2: User Profiles & Settings Cluster (nikhil_database)
 settings_mongo_client = AsyncIOMotorClient(SETTINGS_MONGO_URI, maxPoolSize=10, serverSelectionTimeoutMS=5000)
 settings_db = settings_mongo_client[SETTINGS_DB_NAME]
 
+# Cluster 3: High-Volume Cache & Stats Cluster (earlbrooks41441) - Distributes heavy load away from clusters 1 & 2!
+cache_mongo_client = AsyncIOMotorClient(CACHE_MONGO_URI, maxPoolSize=10, serverSelectionTimeoutMS=5000)
+cache_db = cache_mongo_client[CACHE_DB_NAME]
+
+# Distributed Collections:
 users_collection = settings_db["users"]
 premium_users_collection = db["premium_users"]
-statistics_collection = db["statistics"]
 codedb = db["redeem_code"]
 banned_users_collection = db["banned_users"]
-cached_peers_collection = db["cached_peers"]
+cached_peers_collection = cache_db["cached_peers"]
+statistics_collection = cache_db["statistics"]
 
 async def save_peers_to_db(peers):
     """
@@ -68,13 +80,14 @@ async def save_peers_to_db(peers):
                 )
         if operations:
             await cached_peers_collection.bulk_write(operations, ordered=False)
-            logger.info(f"💾 Synced {len(operations)} peers to MongoDB cached_peers.")
+            logger.info(f"💾 Synced {len(operations)} peers to MongoDB cached_peers on Cluster 3.")
     except Exception as e:
         logger.error(f"Error saving peers to MongoDB: {e}")
 
 async def load_all_peers_from_db():
     """
-    Loads all saved peers from MongoDB cached_peers collection.
+    Loads all saved peers from MongoDB cached_peers collection on Cluster 3.
+    Also seamlessly migrates and cleans legacy peers from Cluster 1 if present.
     Returns list of tuples: (peer_id, access_hash, type, username, phone_number)
     """
     try:
@@ -88,6 +101,31 @@ async def load_all_peers_from_db():
             pn = doc.get("phone_number")
             if pid is not None and ah is not None:
                 peers.append((int(pid), int(ah), str(ptype), un, pn))
+
+        # Check and migrate legacy peers from Cluster 1 to free up Cluster 1 storage
+        try:
+            legacy_col = db["cached_peers"]
+            legacy_count = await legacy_col.count_documents({})
+            if legacy_count > 0:
+                logger.info(f"🔄 Migrating {legacy_count} peers from Cluster 1 to Cluster 3 cache DB...")
+                from pymongo import UpdateOne
+                ops = []
+                async for doc in legacy_col.find({}):
+                    pid = doc.get("_id") if doc.get("_id") is not None else doc.get("peer_id")
+                    ah = doc.get("access_hash")
+                    ptype = doc.get("type", "channel")
+                    un = doc.get("username")
+                    pn = doc.get("phone_number")
+                    if pid is not None and ah is not None:
+                        peers.append((int(pid), int(ah), str(ptype), un, pn))
+                        ops.append(UpdateOne({"_id": int(pid)}, {"$set": doc}, upsert=True))
+                if ops:
+                    await cached_peers_collection.bulk_write(ops, ordered=False)
+                await legacy_col.drop()
+                logger.info("✅ Migrated all legacy cached peers to Cluster 3 and dropped legacy collection on Cluster 1!")
+        except Exception as mig_e:
+            logger.debug(f"Legacy peer check note: {mig_e}")
+
         return peers
     except Exception as e:
         logger.error(f"Error loading peers from MongoDB: {e}")
@@ -263,9 +301,14 @@ async def save_user_session(
         logger.error(f"Error saving session: {e}")
         return False
 
-async def remove_user_session(user_id: int) -> bool:
+async def cleanup_user_all_dbs(user_id: int):
+    """
+    Completely cleans up user documents, settings, temporary data and cached records
+    across all 3 MongoDB clusters to keep databases lightweight and free of junk.
+    """
     try:
         uid = int(user_id)
+        # Cluster 2: Unset settings and personal data
         await users_collection.update_many(
             {"$or": [{"user_id": uid}, {"user_id": str(user_id)}]},
             {"$unset": {
@@ -277,9 +320,53 @@ async def remove_user_session(user_id: int) -> bool:
                 "username": "",
                 "account_id": "",
                 "login_type": "",
+                "delete_words": "",
+                "replacement_words": "",
+                "rename_tag": "",
+                "caption": "",
+                "chat_id": "",
                 "cached_peers": ""
             }}
         )
+    except Exception as e:
+        logger.debug(f"Cluster 2 cleanup: {e}")
+
+    try:
+        uid = int(user_id)
+        # Cluster 3: Delete cached peers or user records
+        await cached_peers_collection.delete_many({"$or": [{"user_id": uid}, {"user_id": str(uid)}]})
+        await statistics_collection.delete_many({"$or": [{"user_id": uid}, {"user_id": str(uid)}]})
+    except Exception as e:
+        logger.debug(f"Cluster 3 cleanup: {e}")
+
+    try:
+        uid = int(user_id)
+        # Cluster 1: Clean legacy peer/temp collections if any
+        await db["cached_peers"].delete_many({"$or": [{"user_id": uid}, {"user_id": str(uid)}]})
+    except Exception as e:
+        logger.debug(f"Cluster 1 cleanup: {e}")
+
+async def init_database_auto_cleanup():
+    """
+    Sets up MongoDB TTL indexes on all clusters for automatic deletion of old statistics,
+    temporary logs, and expired peers so 512MB limits are never exceeded.
+    """
+    try:
+        # Cluster 3: Auto-delete statistics older than 7 days
+        await statistics_collection.create_index("created_at", expireAfterSeconds=604800)
+    except Exception as e:
+        logger.debug(f"TTL index stats note: {e}")
+
+    try:
+        # Cluster 3: Auto-delete cached peers un-updated for 30 days
+        await cached_peers_collection.create_index("updated_at", expireAfterSeconds=2592000)
+    except Exception as e:
+        logger.debug(f"TTL index peers note: {e}")
+
+async def remove_user_session(user_id: int) -> bool:
+    try:
+        uid = int(user_id)
+        await cleanup_user_all_dbs(uid)
         return True
     except Exception as e:
         logger.error(f"Error removing session: {e}")

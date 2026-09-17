@@ -189,16 +189,20 @@ async def py_remreplacement_cb(client, callback: CallbackQuery):
 @pyapp.on_callback_query(filters.regex("^py_reset_settings$"))
 async def py_reset_settings_cb(client, callback: CallbackQuery):
     user_id = callback.from_user.id
-    await users_collection.update_one(
-        {'user_id': user_id},
-        {'$unset': {
-            'delete_words': '',
-            'replacement_words': '',
-            'rename_tag': '',
-            'caption': '',
-            'chat_id': ''
-        }}
-    )
+    try:
+        from utils.func import cleanup_user_all_dbs
+        await cleanup_user_all_dbs(user_id)
+    except Exception:
+        await users_collection.update_one(
+            {'user_id': user_id},
+            {'$unset': {
+                'delete_words': '',
+                'replacement_words': '',
+                'rename_tag': '',
+                'caption': '',
+                'chat_id': ''
+            }}
+        )
     for p in [f"{user_id}.jpg", f"thumb_{user_id}.jpg"]:
         if os.path.exists(p):
             os.remove(p)

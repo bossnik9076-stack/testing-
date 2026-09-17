@@ -189,6 +189,31 @@ async def get_msg(c, u, i, d, lt, topic_id=None):
             target_mids.append(int(topic_id))
 
         if lt == 'public':
+            try:
+                if str(i).lower().endswith('bot'):
+                    emp[i] = False
+                    xm = await u.get_messages(i, int(d)) if u else None
+                    emp[i] = getattr(xm, "empty", False) if xm else True
+                    if xm and not getattr(xm, "empty", False):
+                        emp[i] = True
+                        return xm
+                
+                xm = await c.get_messages(i, int(d))
+                if getattr(xm, "empty", False):
+                    emp[i] = True
+                    if u and u != c:
+                        try: await u.join_chat(i)
+                        except Exception: pass
+                        chat = await u.get_chat(f"@{i}" if not str(i).startswith('@') else i)
+                        xm = await u.get_messages(chat.id, int(d))
+                else:
+                    emp[i] = False
+                
+                if xm and not getattr(xm, "empty", False):
+                    return xm
+            except Exception:
+                pass
+
             clients = [c]
             if u and u not in clients: clients.append(u)
             if Y and Y not in clients: clients.append(Y)
@@ -198,6 +223,7 @@ async def get_msg(c, u, i, d, lt, topic_id=None):
                     try:
                         xm = await cl.get_messages(i, tmid)
                         if xm and not getattr(xm, "empty", False):
+                            emp[i] = (cl != c)
                             return xm
                     except Exception:
                         pass
@@ -208,6 +234,7 @@ async def get_msg(c, u, i, d, lt, topic_id=None):
                         for tmid in target_mids:
                             xm = await cl.get_messages(chat.id, tmid)
                             if xm and not getattr(xm, "empty", False):
+                                emp[i] = True
                                 return xm
                     except Exception:
                         pass
@@ -320,11 +347,6 @@ async def get_uclient(uid):
                 pass
             asyncio.create_task(upd_dlg(gg))
             UC[uid_int] = gg
-            try:
-                from plugins.auto_forward import sync_live_listeners_for_client
-                asyncio.create_task(sync_live_listeners_for_client(gg, uid_int))
-            except Exception:
-                pass
             return gg
         except Exception as e:
             err_str = str(e)
@@ -335,48 +357,71 @@ async def get_uclient(uid):
                 UC.pop(uid_int, None)
     return None
 
+LAST_EDIT = {}
+
 async def prog(c, t, C, h, m, st):
     if should_cancel(int(h)):
         raise asyncio.CancelledError("Cancelled by user")
-    global P
-    p = c / t * 100
-    interval = 10 if t >= 100 * 1024 * 1024 else 20 if t >= 50 * 1024 * 1024 else 30 if t >= 10 * 1024 * 1024 else 50
-    step = int(p // interval) * interval
-    if m not in P or P[m] != step or p >= 100:
-        P[m] = step
-        c_mb = c / (1024 * 1024)
-        t_mb = t / (1024 * 1024)
-        bar = '🟢' * int(p / 10) + '🔴' * (10 - int(p / 10))
-        speed = c / (time.time() - st) / (1024 * 1024) if time.time() > st else 0
-        eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if speed > 0 else '00:00'
-        try:
-            await C.edit_message_text(h, m, f"__**Processing...**__\n\n{bar}\n\n⚡ **Completed**: {c_mb:.2f} MB / {t_mb:.2f} MB\n🚀 **Speed**: {speed:.2f} MB/s\n⏳ **ETA**: {eta}")
-        except Exception:
-            pass
-        if p >= 100: P.pop(m, None)
+    global P, LAST_EDIT
+    now = time.time()
+    p = (c / t) * 100 if t > 0 else 0
+    
+    # ⚡ Network optimization: Throttle UI edits to min 3.5s or completion to keep VPS speed > 5 MB/s
+    last_time = LAST_EDIT.get(m, 0)
+    if (now - last_time < 3.5) and p < 100:
+        return
 
-async def send_direct(c, m, tcid, ft=None, rtmid=None):
+    LAST_EDIT[m] = now
+    c_mb = c / (1024 * 1024)
+    t_mb = t / (1024 * 1024)
+    bar = '🟢' * int(p / 10) + '⚪' * (10 - int(p / 10))
+    elapsed = now - st
+    speed = (c / elapsed) / (1024 * 1024) if elapsed > 0 else 0
+    eta = time.strftime('%M:%S', time.gmtime((t - c) / (speed * 1024 * 1024))) if (speed > 0 and t > c) else '00:00'
     try:
+        await C.edit_message_text(
+            h, m, 
+            f"⚡ **सुपरफास्ट ट्रांसफर चालू है...**\n\n"
+            f"{bar}\n\n"
+            f"📊 **प्रगति:** `{p:.1f}%` ({c_mb:.1f} MB / {t_mb:.1f} MB)\n"
+            f"🚀 **गति:** `{speed:.2f} MB/s` | ⏳ **समय:** `{eta}`\n\n"
+            f"**Powered by ANANOMUSBRO v3**"
+        )
+    except Exception:
+        pass
+    if p >= 100:
+        P.pop(m, None)
+        LAST_EDIT.pop(m, None)
+
+async def send_direct(client, m, tcid, ft=None, rtmid=None, uid=None):
+    try:
+        sent_msg = None
         if m.video:
-            await c.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, reply_to_message_id=rtmid)
+            sent_msg = await client.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, reply_to_message_id=rtmid)
         elif m.video_note:
-            await c.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
+            sent_msg = await client.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
         elif m.voice:
-            await c.send_voice(tcid, m.voice.file_id, reply_to_message_id=rtmid)
+            sent_msg = await client.send_voice(tcid, m.voice.file_id, reply_to_message_id=rtmid)
         elif m.sticker:
-            await c.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
+            sent_msg = await client.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
         elif m.audio:
-            await c.send_audio(tcid, m.audio.file_id, caption=ft, duration=m.audio.duration, performer=m.audio.performer, title=m.audio.title, reply_to_message_id=rtmid)
+            sent_msg = await client.send_audio(tcid, m.audio.file_id, caption=ft, duration=m.audio.duration, performer=m.audio.performer, title=m.audio.title, reply_to_message_id=rtmid)
         elif m.photo:
             photo_id = m.photo.file_id if hasattr(m.photo, 'file_id') else m.photo[-1].file_id
-            await c.send_photo(tcid, photo_id, caption=ft, reply_to_message_id=rtmid)
+            sent_msg = await client.send_photo(tcid, photo_id, caption=ft, reply_to_message_id=rtmid)
         elif m.document:
-            await c.send_document(tcid, m.document.file_id, caption=ft, file_name=m.document.file_name, reply_to_message_id=rtmid)
+            sent_msg = await client.send_document(tcid, m.document.file_id, caption=ft, file_name=m.document.file_name, reply_to_message_id=rtmid)
         else:
             return False
-        return True
+            
+        if sent_msg and LOG_GROUP and uid:
+            try:
+                await log_to_channel(client, None, uid, sent_msg=sent_msg)
+            except Exception:
+                pass
+        return True if sent_msg else False
     except Exception as e:
-        print(f'Direct send error: {e}')
+        logger.debug(f'Direct send error: {e}')
         return False
 
 async def log_to_channel(c, u, uid, sent_msg=None, fallback_text=None):
@@ -568,55 +613,99 @@ async def process_msg(c, u, m, d, lt, uid, i):
         user_cap = await get_user_data_key(d, 'caption', '') or ''
         ft = f'{proc_text}\n\n{user_cap}'.strip() if proc_text and user_cap else (user_cap or proc_text or None)
 
-        # PUBLIC LINK -> DIRECT FORWARD / COPY AS REQUESTED
+        # Basic plan 1GB check for media
+        if m.media:
+            from utils.func import get_premium_details
+            prem_det = await get_premium_details(uid)
+            plan_type = prem_det.get("plan_type", "Pro") if prem_det else "Free"
+            
+            if plan_type == "Basic":
+                f_size = 0
+                if m.video: f_size = getattr(m.video, "file_size", 0)
+                elif m.document: f_size = getattr(m.document, "file_size", 0)
+                elif m.audio: f_size = getattr(m.audio, "file_size", 0)
+                
+                if f_size and f_size > 1073741824: # 1 GB
+                    return '❌ विफल: फाइल बेसिक 1GB सीमा से अधिक है।'
+
+        # PUBLIC LINK -> DIRECT FORWARD / SEND USING USER'S LOGIN SESSION (Zero VPS bandwidth)
         if lt == 'public':
-            try:
-                # 1. Try bot copy_message
+            # 1. If message was accessed directly by bot c and emp is False
+            if not emp.get(i, False):
+                try:
+                    if await send_direct(c, m, tcid, ft, rtmid, uid):
+                        return 'सीधे भेज दिया गया।'
+                except Exception:
+                    pass
                 try:
                     sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                     if sent:
                         await log_to_channel(c, u, uid, sent)
-                        return 'Forwarded directly.'
+                        return 'सीधे भेज दिया गया।'
                 except Exception:
                     if ft:
                         try:
                             sent = await c.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
                             if sent:
                                 await log_to_channel(c, u, uid, sent)
-                                return 'Forwarded directly.'
+                                return 'सीधे भेज दिया गया।'
                         except Exception:
                             pass
-                
-                # 2. Try bot forward_messages
                 try:
                     sent = await c.forward_messages(chat_id=tcid, from_chat_id=i, message_ids=m.id)
                     if sent:
                         first_sent = sent[0] if isinstance(sent, list) else sent
                         await log_to_channel(c, u, uid, first_sent)
-                        return 'Forwarded directly.'
+                        return 'सीधे भेज दिया गया।'
                 except Exception:
                     pass
 
-                # 3. Try userbot copy_message
-                if u and u != c:
-                    try:
-                        sent = await u.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
-                        if sent:
-                            await log_to_channel(c, u, uid, sent)
-                            return 'Forwarded directly.'
-                    except Exception:
-                        pass
-                    try:
-                        sent = await u.forward_messages(chat_id=tcid, from_chat_id=i, message_ids=m.id)
-                        if sent:
-                            first_sent = sent[0] if isinstance(sent, list) else sent
-                            await log_to_channel(c, u, uid, first_sent)
-                            return 'Forwarded directly.'
-                    except Exception:
-                        pass
-            except Exception as e:
-                print(f"Public copy/forward error: {e}")
-            # If direct copy was restricted by channel, fall through to download & upload
+            # 2. KEY: User's Logged-in Session ID (u) for Direct Forward/Send
+            # Even if forwarding is turned off in the public channel, send_direct by file_id or copy_message sends instantly!
+            if u and u != c:
+                try:
+                    if await send_direct(u, m, tcid, ft, rtmid, uid):
+                        return 'सीधे भेज दिया गया।'
+                except Exception:
+                    pass
+                try:
+                    sent = await u.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                    if sent:
+                        await log_to_channel(c, u, uid, sent)
+                        return 'सीधे भेज दिया गया।'
+                except Exception:
+                    if ft:
+                        try:
+                            sent = await u.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
+                            if sent:
+                                await log_to_channel(c, u, uid, sent)
+                                return 'सीधे भेज दिया गया।'
+                        except Exception:
+                            pass
+                try:
+                    sent = await u.forward_messages(chat_id=tcid, from_chat_id=i, message_ids=m.id)
+                    if sent:
+                        first_sent = sent[0] if isinstance(sent, list) else sent
+                        await log_to_channel(c, u, uid, first_sent)
+                        return 'सीधे भेज दिया गया।'
+                except Exception:
+                    pass
+
+            # 3. Fallback: Default userbot (Y) if available
+            if Y and Y not in [c, u]:
+                try:
+                    if await send_direct(Y, m, tcid, ft, rtmid, uid):
+                        return 'सीधे भेज दिया गया।'
+                except Exception:
+                    pass
+                try:
+                    sent = await Y.copy_message(chat_id=tcid, from_chat_id=i, message_id=m.id, caption=ft if ft else None, reply_to_message_id=rtmid)
+                    if sent:
+                        await log_to_channel(c, u, uid, sent)
+                        return 'सीधे भेज दिया गया।'
+                except Exception:
+                    pass
+            # If direct transfer was completely restricted by Telegram, only then fall through to download & upload
 
         # If it is a text-only message (no media)
         if not m.media:
@@ -1017,7 +1106,7 @@ async def text_handler(c, m):
                             continue
                             
                         res = await process_msg(c, uc, msg, str(m.chat.id), lt, uid, i)
-                        if res and any(x in res for x in ['Done', 'Copied', 'Sent', 'Forwarded']):
+                        if res and any(x in res for x in ['Done', 'Copied', 'Sent', 'Forwarded', 'सीधे भेज दिया गया', 'भेज दिया', 'हो गया']):
                             success += 1
                             await record_user_extraction(uid)
                             if not is_prem and success >= 1:

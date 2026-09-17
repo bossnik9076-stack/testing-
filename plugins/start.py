@@ -118,23 +118,22 @@ def get_main_menu_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📦 Batch Extract", callback_data="btn_batch")
         ],
         [
-            InlineKeyboardButton("🔄 Auto Forward", callback_data="btn_auto_forward"),
-            InlineKeyboardButton("🔑 Login / Session", callback_data="btn_login_menu")
+            InlineKeyboardButton("🔑 Login / Session", callback_data="btn_login_menu"),
+            InlineKeyboardButton("⚙️ Custom Settings", callback_data="btn_settings_menu")
         ],
         [
-            InlineKeyboardButton("⚙️ Custom Settings", callback_data="btn_settings_menu"),
-            InlineKeyboardButton("📊 My Limits & Plan", callback_data="btn_mylimit")
+            InlineKeyboardButton("📊 My Limits & Plan", callback_data="btn_mylimit"),
+            InlineKeyboardButton("💎 VIP Plans", callback_data="see_plan")
         ],
         [
-            InlineKeyboardButton("💎 VIP Plans", callback_data="see_plan"),
-            InlineKeyboardButton("🎟️ Redeem Code", callback_data="btn_redeem_guide")
+            InlineKeyboardButton("🎟️ Redeem Code", callback_data="btn_redeem_guide"),
+            InlineKeyboardButton("🛑 Force Stop Task", callback_data="btn_force_stop")
         ],
         [
-            InlineKeyboardButton("🛑 Force Stop Task", callback_data="btn_force_stop"),
-            InlineKeyboardButton("⚡ Server Speedtest", callback_data="btn_speedtest")
+            InlineKeyboardButton("⚡ Server Speedtest", callback_data="btn_speedtest"),
+            InlineKeyboardButton("❓ Help & Guide", callback_data="btn_help")
         ],
         [
-            InlineKeyboardButton("❓ Help & Guide", callback_data="btn_help"),
             InlineKeyboardButton("☎️ Contact Admin", url="https://t.me/ananomusbro")
         ]
     ]
