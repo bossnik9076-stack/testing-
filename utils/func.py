@@ -175,6 +175,8 @@ def thumbnail(sender: str) -> str | None:
     thumb_path = f"{sender}.jpg"
     if os.path.exists(thumb_path):
         return thumb_path
+    if DEFAULT_THUMB and os.path.exists(DEFAULT_THUMB):
+        return DEFAULT_THUMB
     return None
 
 def hhmmss(seconds: int) -> str:
@@ -744,14 +746,16 @@ async def screenshot(video: str, duration: int, sender: str) -> str | None:
             with Image.open(existing_screenshot) as img:
                 img.thumbnail((1280, 720))
                 thumb_out = os.path.join(THUMB_DIR, f"thumb_{sender}_{int(time.time()*1000)}.jpg")
-                img.convert('RGB').save(thumb_out, "JPEG", quality=85)
+                img.convert('RGB').save(thumb_out, "JPEG", quality=85, optimize=True)
                 return thumb_out
         except Exception:
             return existing_screenshot
 
+    output_file = os.path.join(THUMB_DIR, f"temp_thumb_{sender}_{int(time.time()*1000)}.jpg")
     try:
-        output_file = os.path.join(THUMB_DIR, f"temp_thumb_{sender}_{int(time.time()*1000)}.jpg")
-        time_stamp = hhmmss(max(1, duration // 2))
+        # Seek to 10% of duration or at least 1s if duration is known
+        seek_sec = max(1, duration // 10) if duration > 5 else (1 if duration > 1 else 0)
+        time_stamp = hhmmss(seek_sec)
         cmd = [
             "ffmpeg",
             "-ss", time_stamp,
@@ -768,10 +772,44 @@ async def screenshot(video: str, duration: int, sender: str) -> str | None:
             stderr=asyncio.subprocess.DEVNULL
         )
         await proc.wait()
-        if os.path.exists(output_file):
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            return output_file
+    except Exception as e:
+        logger.warning(f"Screenshot seek attempt error: {e}")
+
+    # Fallback: capture frame at start without seeking
+    try:
+        cmd_fb = [
+            "ffmpeg",
+            "-i", video,
+            "-vframes", "1",
+            "-q:v", "3",
+            "-vf", "scale='min(1280,iw)':-2",
+            output_file,
+            "-y"
+        ]
+        proc_fb = await asyncio.create_subprocess_exec(
+            *cmd_fb,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        await proc_fb.wait()
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
             return output_file
     except Exception as e:
         logger.warning(f"Screenshot fallback error: {e}")
+
+    # Final fallback: default_thumb.jpg optimized for Telegram
+    if DEFAULT_THUMB and os.path.exists(DEFAULT_THUMB):
+        try:
+            default_out = os.path.join(THUMB_DIR, f"default_thumb_{int(time.time()*1000)}.jpg")
+            with Image.open(DEFAULT_THUMB) as img:
+                img.thumbnail((1280, 720))
+                img.convert('RGB').save(default_out, "JPEG", quality=85, optimize=True)
+                return default_out
+        except Exception:
+            return DEFAULT_THUMB
+
     return None
 
 def cleanup_temp_thumb(th: str | None) -> None:
@@ -847,9 +885,11 @@ async def auto_clean_thumbnails_loop():
 async def get_video_metadata(file_path: str) -> dict:
     default_values = {'width': 1280, 'height': 720, 'duration': 0}
     try:
+        # First query video stream dimensions and duration
         cmd = [
             "ffprobe",
             "-v", "error",
+            "-select_streams", "v:0",
             "-show_entries", "stream=width,height,duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
             file_path
@@ -860,12 +900,45 @@ async def get_video_metadata(file_path: str) -> dict:
             stderr=asyncio.subprocess.PIPE
         )
         stdout, _ = await proc.communicate()
-        lines = stdout.decode().strip().split("\n")
-        if len(lines) >= 3:
-            w = int(float(lines[0])) if lines[0].replace('.','',1).isdigit() else 1280
-            h = int(float(lines[1])) if lines[1].replace('.','',1).isdigit() else 720
-            d = int(float(lines[2])) if lines[2].replace('.','',1).isdigit() else 0
-            return {'width': w, 'height': h, 'duration': d}
+        lines = [line.strip() for line in stdout.decode().strip().split("\n") if line.strip()]
+        
+        w = 1280
+        h = 720
+        d = 0
+        if len(lines) >= 2:
+            try:
+                w = int(float(lines[0]))
+                h = int(float(lines[1]))
+            except Exception:
+                pass
+            if len(lines) >= 3:
+                try:
+                    d = int(float(lines[2]))
+                except Exception:
+                    d = 0
+
+        # MKV and certain containers store duration in format container header, not stream
+        if d == 0:
+            cmd_fmt = [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file_path
+            ]
+            proc_fmt = await asyncio.create_subprocess_exec(
+                *cmd_fmt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout_fmt, _ = await proc_fmt.communicate()
+            fmt_str = stdout_fmt.decode().strip()
+            try:
+                d = int(float(fmt_str))
+            except Exception:
+                d = 0
+
+        return {'width': w, 'height': h, 'duration': d}
     except Exception as e:
         logger.warning(f"Metadata probe warning: {e}")
     return default_values

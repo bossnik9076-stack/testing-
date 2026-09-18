@@ -1,6 +1,6 @@
 pyrofork==2.3.69
 tgcrypto
-pymongo
+pymongo[srv]
 motor
 python-dotenv
 aiohttp
@@ -8,4 +8,5 @@ Pillow
 telethon
 cryptography
 psutil
+speedtest-cli
 

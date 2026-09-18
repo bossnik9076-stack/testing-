@@ -158,132 +158,121 @@ async def upd_dlg(c):
         print(f'Failed to update dialogs: {e}')
         return False
 
-# fixed the old group of 2021-2022 extraction 🌝 (buy krne ka fayda nhi ab old group) ✅ 
+# Bulletproof message extractor for public, private, and restricted channels
 async def get_msg(c, u, i, d, lt, topic_id=None):
     try:
-        cid_str = str(i).strip()
-        try:
-            if cid_str.startswith('-100'):
-                cid_int = int(cid_str)
-            elif cid_str.startswith('-'):
-                cid_int = int(f"-100{cid_str[1:]}")
-            elif cid_str.isdigit():
-                cid_int = int(f"-100{cid_str}")
-            else:
-                cid_int = int(cid_str)
-        except Exception:
-            cid_int = i
-
-        base_id = str(cid_str).replace('-100', '').replace('-', '')
-        alt_cids = [cid_int]
-        if base_id.isdigit():
-            alt_1 = int(f"-100{base_id}")
-            alt_2 = int(f"-{base_id}")
-            alt_3 = int(base_id)
-            for x in [alt_1, alt_2, alt_3]:
-                if x not in alt_cids:
-                    alt_cids.append(x)
-
         target_mids = [int(d)]
         if topic_id and int(topic_id) not in target_mids:
             target_mids.append(int(topic_id))
 
-        if lt == 'public':
-            try:
-                if str(i).lower().endswith('bot'):
-                    emp[i] = False
-                    xm = await u.get_messages(i, int(d)) if u else None
-                    emp[i] = getattr(xm, "empty", False) if xm else True
-                    if xm and not getattr(xm, "empty", False):
-                        emp[i] = True
-                        return xm
-                
-                xm = await c.get_messages(i, int(d))
-                if getattr(xm, "empty", False):
-                    emp[i] = True
-                    if u and u != c:
-                        try: await u.join_chat(i)
-                        except Exception: pass
-                        chat = await u.get_chat(f"@{i}" if not str(i).startswith('@') else i)
-                        xm = await u.get_messages(chat.id, int(d))
-                else:
-                    emp[i] = False
-                
-                if xm and not getattr(xm, "empty", False):
-                    return xm
-            except Exception:
-                pass
+        cid_str = str(i).strip()
+        candidates = []
+        if cid_str:
+            candidates.append(cid_str)
+            if not cid_str.startswith(('-', '@')):
+                candidates.append(f"@{cid_str}")
+            clean_name = cid_str.lstrip('@')
+            if clean_name not in candidates:
+                candidates.append(clean_name)
 
-            clients = [c]
-            if u and u not in clients: clients.append(u)
-            if Y and Y not in clients: clients.append(Y)
+        base_id = cid_str.replace('-100', '').replace('-', '')
+        if base_id.isdigit():
+            for pref in [f"-100{base_id}", f"-{base_id}", base_id]:
+                try:
+                    p_int = int(pref)
+                    if p_int not in candidates:
+                        candidates.append(p_int)
+                except Exception:
+                    pass
 
-            for cl in clients:
+        # Prioritize logged-in user client (u) first because user logged in with their account
+        # that has permissions/membership in the channel/group.
+        clients = []
+        if u and u not in clients:
+            clients.append(u)
+        if c and c not in clients:
+            clients.append(c)
+        if Y and Y not in clients:
+            clients.append(Y)
+
+        for cl in clients:
+            # 1. Direct message fetch across candidate IDs / usernames
+            for cand in candidates:
                 for tmid in target_mids:
                     try:
-                        xm = await cl.get_messages(i, tmid)
+                        xm = await cl.get_messages(cand, tmid)
                         if xm and not getattr(xm, "empty", False):
-                            emp[i] = (cl != c)
                             return xm
                     except Exception:
                         pass
-                if cl != c:
-                    try:
-                        await cl.join_chat(i)
-                        chat = await cl.get_chat(f"@{i}" if not str(i).startswith('@') else i)
+
+            # 2. Try resolving chat object via get_chat (loads access_hash into Pyrogram peer storage)
+            resolved_chat_id = None
+            for cand in candidates:
+                try:
+                    chat_obj = await cl.get_chat(cand)
+                    if chat_obj and getattr(chat_obj, 'id', None):
+                        resolved_chat_id = chat_obj.id
                         for tmid in target_mids:
-                            xm = await cl.get_messages(chat.id, tmid)
-                            if xm and not getattr(xm, "empty", False):
-                                emp[i] = True
-                                return xm
+                            try:
+                                xm = await cl.get_messages(resolved_chat_id, tmid)
+                                if xm and not getattr(xm, "empty", False):
+                                    return xm
+                            except Exception:
+                                pass
+                        break
+                except Exception:
+                    pass
+
+            # 3. For user clients (cl != c), try join_chat if not resolved yet
+            if cl != c and not resolved_chat_id:
+                for cand in candidates:
+                    try:
+                        await cl.join_chat(cand)
                     except Exception:
-                        pass
-            return None
-        else:
-            # Private channel / supergroup / topic link
-            # Priority:
-            # 1. User client (u)
-            # 2. Bot client (c) - Bot is often added as admin in target/source channel!
-            # 3. Default userbot (Y)
-            clients = []
-            if u and u not in clients: clients.append(u)
-            if c and c not in clients: clients.append(c)
-            if Y and Y not in clients: clients.append(Y)
-
-            for cl in clients:
-                for target_chat in alt_cids:
-                    # 1. Direct message fetch
-                    for tmid in target_mids:
-                        try:
-                            result = await cl.get_messages(target_chat, tmid)
-                            if result and not getattr(result, "empty", False):
-                                return result
-                        except Exception:
-                            pass
-
-                    # 2. Try resolving peer via get_chat (loads access_hash into Pyrogram)
+                        pass  # Safely ignore UserAlreadyParticipant or join errors
                     try:
-                        await cl.get_chat(target_chat)
-                        for tmid in target_mids:
-                            result = await cl.get_messages(target_chat, tmid)
-                            if result and not getattr(result, "empty", False):
-                                return result
+                        chat_obj = await cl.get_chat(cand)
+                        if chat_obj and getattr(chat_obj, 'id', None):
+                            for tmid in target_mids:
+                                try:
+                                    xm = await cl.get_messages(chat_obj.id, tmid)
+                                    if xm and not getattr(xm, "empty", False):
+                                        return xm
+                                except Exception:
+                                    pass
+                            break
                     except Exception:
                         pass
 
-                    # 3. Try resolving via dialogs scan
-                    try:
-                        async for dlg in cl.get_dialogs(limit=100):
-                            if dlg.chat and (dlg.chat.id == target_chat or str(dlg.chat.id) in [str(x) for x in alt_cids]):
-                                break
-                        for tmid in target_mids:
-                            result = await cl.get_messages(target_chat, tmid)
-                            if result and not getattr(result, "empty", False):
-                                return result
-                    except Exception:
-                        pass
+            # 4. Search in user's dialogs (vital for restricted/private channels where user is a participant)
+            try:
+                clean_target = str(i).lstrip('@').lower()
+                clean_num = base_id if base_id.isdigit() else None
+                async for dlg in cl.get_dialogs(limit=250):
+                    if not dlg.chat:
+                        continue
+                    match = False
+                    d_un = getattr(dlg.chat, 'username', None)
+                    if d_un and d_un.lower() == clean_target:
+                        match = True
+                    elif clean_num and str(dlg.chat.id).replace('-100', '').replace('-', '') == clean_num:
+                        match = True
+                    elif getattr(dlg.chat, 'title', None) and clean_target.replace('_', ' ') in dlg.chat.title.lower():
+                        match = True
 
-            return None
+                    if match:
+                        for tmid in target_mids:
+                            try:
+                                xm = await cl.get_messages(dlg.chat.id, tmid)
+                                if xm and not getattr(xm, "empty", False):
+                                    return xm
+                            except Exception:
+                                pass
+            except Exception as e:
+                logger.debug(f"Dialogs search warning: {e}")
+
+        return None
     except Exception as e:
         logger.error(f'Error fetching message: {e}')
         return None
@@ -312,8 +301,13 @@ async def get_uclient(uid):
             try:
                 await cl.start()
                 return cl
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not reconnect cached client for {uid_int}: {e}")
+                try:
+                    await cl.stop()
+                except Exception:
+                    pass
+                UC.pop(uid_int, None)
 
     ud = await get_user_data(uid_int)
     xxx = ud.get('session_string') if ud else None
@@ -397,7 +391,10 @@ async def send_direct(client, m, tcid, ft=None, rtmid=None, uid=None):
     try:
         sent_msg = None
         if m.video:
-            sent_msg = await client.send_video(tcid, m.video.file_id, caption=ft, duration=m.video.duration, width=m.video.width, height=m.video.height, reply_to_message_id=rtmid)
+            v_dur = int(getattr(m.video, 'duration', 0) or 0)
+            v_w = int(getattr(m.video, 'width', 0) or 0)
+            v_h = int(getattr(m.video, 'height', 0) or 0)
+            sent_msg = await client.send_video(tcid, m.video.file_id, caption=ft, duration=v_dur, width=v_w, height=v_h, reply_to_message_id=rtmid)
         elif m.video_note:
             sent_msg = await client.send_video_note(tcid, m.video_note.file_id, reply_to_message_id=rtmid)
         elif m.voice:
@@ -405,7 +402,8 @@ async def send_direct(client, m, tcid, ft=None, rtmid=None, uid=None):
         elif m.sticker:
             sent_msg = await client.send_sticker(tcid, m.sticker.file_id, reply_to_message_id=rtmid)
         elif m.audio:
-            sent_msg = await client.send_audio(tcid, m.audio.file_id, caption=ft, duration=m.audio.duration, performer=m.audio.performer, title=m.audio.title, reply_to_message_id=rtmid)
+            a_dur = int(getattr(m.audio, 'duration', 0) or 0)
+            sent_msg = await client.send_audio(tcid, m.audio.file_id, caption=ft, duration=a_dur, performer=m.audio.performer, title=m.audio.title, reply_to_message_id=rtmid)
         elif m.photo:
             photo_id = m.photo.file_id if hasattr(m.photo, 'file_id') else m.photo[-1].file_id
             sent_msg = await client.send_photo(tcid, photo_id, caption=ft, reply_to_message_id=rtmid)
@@ -499,7 +497,7 @@ async def log_to_channel(c, u, uid, sent_msg=None, fallback_text=None):
         logger.error(f"Error in log_to_channel: {e}")
 
 async def send_media_file(client, target_chat, f, m, ft, th, dur, h, w, prog, p, d, st, rtmid):
-    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv']
+    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ogv', '.ts']
     audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.opus', '.aiff', '.ac3']
     file_ext = os.path.splitext(f)[1].lower()
     caption_text = ft if ft else (m.caption if m.caption else None)
@@ -512,17 +510,62 @@ async def send_media_file(client, target_chat, f, m, ft, th, dur, h, w, prog, p,
             if any(k in err_str for k in ['markdown', 'entity', 'tag', 'entities', 'bracket']):
                 logger.warning(f"Markdown parse warning ({err}), retrying without parse_mode")
                 kwargs.pop('parse_mode', None)
-                return await send_func(**kwargs)
+                try:
+                    return await send_func(**kwargs)
+                except Exception as err2:
+                    if 'thumb' in str(err2).lower():
+                        kwargs.pop('thumb', None)
+                        return await send_func(**kwargs)
+                    raise err2
+            if 'thumb' in err_str:
+                logger.warning(f"Thumb send warning ({err}), retrying without thumb")
+                kwargs.pop('thumb', None)
+                return await send_func(**kwargs, parse_mode=ParseMode.MARKDOWN)
             raise err
 
     if m.video or (m.document and file_ext in video_extensions):
-        return await _safe_send(
-            client.send_video,
-            chat_id=target_chat, video=f, caption=caption_text,
-            thumb=th, width=w, height=h, duration=dur,
-            progress=prog, progress_args=(client, d, p.id, st),
-            reply_to_message_id=rtmid
-        )
+        # Ensure non-negative integers. NEVER pass None to send_video for duration/width/height!
+        # Pyrogram's MTProto serializer packs duration with struct.pack('<d', duration) and
+        # will throw "struct.error: required argument is not a float" if duration is None!
+        clean_dur = 0
+        try:
+            if dur is not None:
+                clean_dur = int(float(dur))
+        except Exception:
+            clean_dur = 0
+
+        clean_w = 0
+        try:
+            if w is not None:
+                clean_w = int(float(w))
+        except Exception:
+            clean_w = 0
+
+        clean_h = 0
+        try:
+            if h is not None:
+                clean_h = int(float(h))
+        except Exception:
+            clean_h = 0
+
+        try:
+            return await _safe_send(
+                client.send_video,
+                chat_id=target_chat, video=f, caption=caption_text,
+                thumb=th, width=clean_w, height=clean_h, duration=clean_dur,
+                supports_streaming=True,
+                progress=prog, progress_args=(client, d, p.id, st),
+                reply_to_message_id=rtmid
+            )
+        except Exception as vid_err:
+            logger.warning(f"send_video error ({vid_err}). Falling back to send_document to guarantee delivery!")
+            return await _safe_send(
+                client.send_document,
+                chat_id=target_chat, document=f, caption=caption_text,
+                thumb=th, file_name=os.path.basename(f),
+                progress=prog, progress_args=(client, d, p.id, st),
+                reply_to_message_id=rtmid
+            )
     elif m.video_note:
         return await client.send_video_note(
             target_chat, video_note=f, progress=prog,
@@ -536,12 +579,30 @@ async def send_media_file(client, target_chat, f, m, ft, th, dur, h, w, prog, p,
     elif m.sticker:
         return await client.send_sticker(target_chat, m.sticker.file_id, reply_to_message_id=rtmid)
     elif m.audio or (m.document and file_ext in audio_extensions):
-        return await _safe_send(
-            client.send_audio,
-            chat_id=target_chat, audio=f, caption=caption_text,
-            thumb=th, progress=prog, progress_args=(client, d, p.id, st),
-            reply_to_message_id=rtmid
-        )
+        clean_dur = 0
+        try:
+            if dur is not None:
+                clean_dur = int(float(dur))
+        except Exception:
+            clean_dur = 0
+
+        try:
+            return await _safe_send(
+                client.send_audio,
+                chat_id=target_chat, audio=f, caption=caption_text,
+                duration=clean_dur,
+                thumb=th, progress=prog, progress_args=(client, d, p.id, st),
+                reply_to_message_id=rtmid
+            )
+        except Exception as aud_err:
+            logger.warning(f"send_audio error ({aud_err}). Falling back to send_document!")
+            return await _safe_send(
+                client.send_document,
+                chat_id=target_chat, document=f, caption=caption_text,
+                thumb=th, file_name=os.path.basename(f),
+                progress=prog, progress_args=(client, d, p.id, st),
+                reply_to_message_id=rtmid
+            )
     elif m.photo:
         return await _safe_send(
             client.send_photo,
@@ -628,85 +689,111 @@ async def process_msg(c, u, m, d, lt, uid, i):
                 if f_size and f_size > 1073741824: # 1 GB
                     return '❌ विफल: फाइल बेसिक 1GB सीमा से अधिक है।'
 
-        # PUBLIC LINK -> DIRECT FORWARD / SEND USING USER'S LOGIN SESSION (Zero VPS bandwidth)
+        # PUBLIC LINK -> DIRECT FORWARD / SEND USING ZERO VPS BANDWIDTH
         if lt == 'public':
-            from_chat = getattr(m.chat, 'id', None) or (f"@{i}" if not str(i).startswith(('-', '@')) else i)
-            
-            # 1. First try BOT (c) direct copy/forward to user chat
-            try:
-                sent = await c.copy_message(chat_id=tcid, from_chat_id=from_chat, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
-                if sent:
-                    await log_to_channel(c, u, uid, sent)
-                    return 'सीधे भेज दिया गया।'
-            except Exception:
-                if ft:
-                    try:
-                        sent = await c.copy_message(chat_id=tcid, from_chat_id=from_chat, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
-                        if sent:
-                            await log_to_channel(c, u, uid, sent)
-                            return 'सीधे भेज दिया गया।'
-                    except Exception:
-                        pass
-            try:
-                sent = await c.forward_messages(chat_id=tcid, from_chat_id=from_chat, message_ids=m.id)
-                if sent:
-                    first_sent = sent[0] if isinstance(sent, list) else sent
-                    await log_to_channel(c, u, uid, first_sent)
-                    return 'सीधे भेज दिया गया।'
-            except Exception:
-                pass
+            chat_candidates = []
+            if getattr(m, 'chat', None):
+                if getattr(m.chat, 'username', None):
+                    chat_candidates.append(m.chat.username)
+                    chat_candidates.append(f"@{m.chat.username}")
+                if getattr(m.chat, 'id', None):
+                    chat_candidates.append(m.chat.id)
+            if i:
+                if i not in chat_candidates:
+                    chat_candidates.append(i)
+                if not str(i).startswith(('-', '@')):
+                    cand_at = f"@{i}"
+                    if cand_at not in chat_candidates:
+                        chat_candidates.append(cand_at)
+
+            # 1. First try BOT (c) direct send / copy / forward
             try:
                 if await send_direct(c, m, tcid, ft, rtmid, uid):
                     return 'सीधे भेज दिया गया।'
             except Exception:
                 pass
 
-            # 2. KEY: User's Logged-in Session ID (u) for Direct Forward/Send
-            # If bot was restricted in public channel, user's session copies or sends it!
-            if u and u != c:
-                target_chat_u = "me" if (str(tcid) == str(uid)) else tcid
+            for ch_cand in chat_candidates:
                 try:
-                    sent = await u.copy_message(chat_id=target_chat_u, from_chat_id=from_chat, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                    sent = await c.copy_message(chat_id=tcid, from_chat_id=ch_cand, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
                     if sent:
                         await log_to_channel(c, u, uid, sent)
                         return 'सीधे भेज दिया गया।'
                 except Exception:
                     if ft:
                         try:
-                            sent = await u.copy_message(chat_id=target_chat_u, from_chat_id=from_chat, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
+                            sent = await c.copy_message(chat_id=tcid, from_chat_id=ch_cand, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
                             if sent:
                                 await log_to_channel(c, u, uid, sent)
                                 return 'सीधे भेज दिया गया।'
                         except Exception:
                             pass
                 try:
-                    sent = await u.forward_messages(chat_id=target_chat_u, from_chat_id=from_chat, message_ids=m.id)
+                    sent = await c.forward_messages(chat_id=tcid, from_chat_id=ch_cand, message_ids=m.id)
                     if sent:
                         first_sent = sent[0] if isinstance(sent, list) else sent
                         await log_to_channel(c, u, uid, first_sent)
                         return 'सीधे भेज दिया गया।'
                 except Exception:
                     pass
+
+            # 2. KEY: User's Logged-in Session ID (u) for Direct Forward/Send
+            if u and u != c:
                 try:
-                    if await send_direct(u, m, target_chat_u, ft, rtmid, uid):
+                    if await send_direct(u, m, tcid, ft, rtmid, uid):
                         return 'सीधे भेज दिया गया।'
                 except Exception:
                     pass
 
+                for ch_cand in chat_candidates:
+                    try:
+                        sent = await u.copy_message(chat_id=tcid, from_chat_id=ch_cand, message_id=m.id, caption=ft if ft else None, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=rtmid)
+                        if sent:
+                            await log_to_channel(c, u, uid, sent)
+                            return 'सीधे भेज दिया गया।'
+                    except Exception:
+                        if ft:
+                            try:
+                                sent = await u.copy_message(chat_id=tcid, from_chat_id=ch_cand, message_id=m.id, caption=ft, reply_to_message_id=rtmid)
+                                if sent:
+                                    await log_to_channel(c, u, uid, sent)
+                                    return 'सीधे भेज दिया गया।'
+                            except Exception:
+                                pass
+                    try:
+                        sent = await u.forward_messages(chat_id=tcid, from_chat_id=ch_cand, message_ids=m.id)
+                        if sent:
+                            first_sent = sent[0] if isinstance(sent, list) else sent
+                            await log_to_channel(c, u, uid, first_sent)
+                            return 'सीधे भेज दिया गया।'
+                    except Exception:
+                        pass
+
             # 3. Fallback: Default userbot (Y) if available
             if Y and Y not in [c, u]:
-                try:
-                    sent = await Y.copy_message(chat_id=tcid, from_chat_id=from_chat, message_id=m.id, caption=ft if ft else None, reply_to_message_id=rtmid)
-                    if sent:
-                        await log_to_channel(c, u, uid, sent)
-                        return 'सीधे भेज दिया गया।'
-                except Exception:
-                    pass
                 try:
                     if await send_direct(Y, m, tcid, ft, rtmid, uid):
                         return 'सीधे भेज दिया गया।'
                 except Exception:
                     pass
+
+                for ch_cand in chat_candidates:
+                    try:
+                        sent = await Y.copy_message(chat_id=tcid, from_chat_id=ch_cand, message_id=m.id, caption=ft if ft else None, reply_to_message_id=rtmid)
+                        if sent:
+                            await log_to_channel(c, u, uid, sent)
+                            return 'सीधे भेज दिया गया।'
+                    except Exception:
+                        pass
+                    try:
+                        sent = await Y.forward_messages(chat_id=tcid, from_chat_id=ch_cand, message_ids=m.id)
+                        if sent:
+                            first_sent = sent[0] if isinstance(sent, list) else sent
+                            await log_to_channel(c, u, uid, first_sent)
+                            return 'सीधे भेज दिया गया।'
+                    except Exception:
+                        pass
+            # If direct transfer was completely restricted by Telegram, only then fall through to download & upload
             # If direct transfer was completely restricted by Telegram, only then fall through to download & upload
 
         # If it is a text-only message (no media)
@@ -774,7 +861,9 @@ async def process_msg(c, u, m, d, lt, uid, i):
             await c.edit_message_text(d, p.id, '⚡ File is larger than 2GB. Uploading via userbot...')
             await upd_dlg(Y)
             mtd = await get_video_metadata(f)
-            dur, h, w = mtd['duration'], mtd['width'], mtd['height']
+            dur = int(float(mtd.get('duration') or 0))
+            h = int(float(mtd.get('height') or 0))
+            w = int(float(mtd.get('width') or 0))
             th = await screenshot(f, dur, d)
             
             send_funcs = {'video': Y.send_video, 'video_note': Y.send_video_note, 
@@ -784,13 +873,21 @@ async def process_msg(c, u, m, d, lt, uid, i):
             for mtype, func in send_funcs.items():
                 if f.endswith('.mp4'): mtype = 'video'
                 if getattr(m, mtype, None):
-                    sent = await func(LOG_GROUP, f, thumb=th if mtype == 'video' else None, 
-                                    duration=dur if mtype == 'video' else None,
-                                    height=h if mtype == 'video' else None,
-                                    width=w if mtype == 'video' else None,
-                                    caption=ft if m.caption and mtype not in ['video_note', 'voice'] else None, 
-                                    parse_mode=ParseMode.MARKDOWN,
-                                    progress=prog, progress_args=(c, d, p.id, st))
+                    kwargs = {
+                        'caption': ft if m.caption and mtype not in ['video_note', 'voice'] else None,
+                        'parse_mode': ParseMode.MARKDOWN,
+                        'progress': prog,
+                        'progress_args': (c, d, p.id, st)
+                    }
+                    if mtype == 'video':
+                        kwargs['thumb'] = th
+                        kwargs['duration'] = dur
+                        kwargs['height'] = h
+                        kwargs['width'] = w
+                        kwargs['supports_streaming'] = True
+                    elif mtype == 'audio':
+                        kwargs['duration'] = dur
+                    sent = await func(LOG_GROUP, f, **kwargs)
                     break
             else:
                 sent = await Y.send_document(LOG_GROUP, f, thumb=th, caption=ft if m.caption else None, parse_mode=ParseMode.MARKDOWN,
@@ -813,9 +910,12 @@ async def process_msg(c, u, m, d, lt, uid, i):
         sent = None
 
         try:
-            mtd = await get_video_metadata(f) if (m.video or f.endswith('.mp4') or f.endswith('.mkv')) else {'duration': None, 'width': None, 'height': None}
-            dur, h, w = mtd.get('duration'), mtd.get('width'), mtd.get('height')
-            if not th and dur:
+            is_vid = bool(m.video or any(f.lower().endswith(ext) for ext in ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts']))
+            mtd = await get_video_metadata(f) if is_vid else {'duration': 0, 'width': 0, 'height': 0}
+            dur = int(float(mtd.get('duration') or 0))
+            h = int(float(mtd.get('height') or 0))
+            w = int(float(mtd.get('width') or 0))
+            if is_vid and (not th or th == DEFAULT_THUMB):
                 th = await screenshot(f, dur, d)
 
             # 1. Try sending with bot (c) to target chat (tcid)
