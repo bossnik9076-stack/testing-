@@ -15,7 +15,7 @@ except Exception:
     pass
 
 logger = logging.getLogger(__name__)
-from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT
+from config import API_ID, API_HASH, LOG_GROUP, STRING, FORCE_SUB, FREEMIUM_LIMIT, PREMIUM_LIMIT, DEFAULT_THUMB
 from utils.func import get_user_data, screenshot, thumbnail, get_video_metadata, cleanup_temp_thumb
 from utils.func import (
     get_user_data_key, process_text_with_rules, is_premium_user, E,
@@ -915,7 +915,7 @@ async def process_msg(c, u, m, d, lt, uid, i):
             dur = int(float(mtd.get('duration') or 0))
             h = int(float(mtd.get('height') or 0))
             w = int(float(mtd.get('width') or 0))
-            if is_vid and (not th or th == DEFAULT_THUMB):
+            if is_vid and (not th or (DEFAULT_THUMB and th == DEFAULT_THUMB)):
                 th = await screenshot(f, dur, d)
 
             # 1. Try sending with bot (c) to target chat (tcid)
